@@ -1,0 +1,27 @@
+name: Check Persona Workshop
+on: [push, pull_request, workflow_dispatch]
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y libpam0g-dev libclang-dev pkg-config poppler-utils
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --check
+      - run: cargo test --locked
+      - run: cargo clippy --locked --all-targets -- -D warnings
+      - run: cargo build --locked
+      - run: python3 tests/test_import_document.py
+      - run: python3 tests/test_transcription_adapter.py
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci && npx playwright install --with-deps chromium
+        working-directory: ui/tests
+      - run: npm test && node real-service.mjs && node markdown.mjs
+        working-directory: ui/tests

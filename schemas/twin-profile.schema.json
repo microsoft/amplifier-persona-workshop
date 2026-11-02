@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/microsoft/amplifier-persona-workshop/schemas/twin-profile.schema.json",
+  "title": "Twin profile package v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "manifest", "files"],
+  "properties": {
+    "schema": {"const": "twin-profile/1"},
+    "manifest": {
+      "type": "object",
+      "required": ["schema", "subject_key", "revision", "source_revision", "intended_use", "calibrated", "required_context", "files", "evidence_ids", "evidence_assignments", "privacy_revision", "source_ids", "raw_evidence_included", "identity_included"],
+      "properties": {
+        "schema": {"const": "twin-profile/1"},
+        "instruction_format": {"type": "integer", "minimum": 1},
+        "subject_key": {"type": "string", "format": "uuid"},
+        "revision": {"type": "string", "format": "uuid"},
+        "source_revision": {"type": "integer", "minimum": 1},
+        "intended_use": {"const": "labeled simulation"},
+        "calibrated": {"const": false},
+        "required_context": {"const": ["communication.md", "working-style.md"]},
+        "files": {"type": "object", "additionalProperties": {"type": "string", "pattern": "^[a-f0-9]{64}$"}},
+        "evidence_ids": {"type": "array", "items": {"type": "string"}},
+        "evidence_assignments": {"type": "array", "items": {"type": "array", "prefixItems": [{"type": "string"}, {"enum": ["communication", "working"]}], "minItems": 2, "maxItems": 2}},
+        "privacy_revision": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "source_ids": {"type": "array", "items": {"type": "string", "format": "uuid"}},
+        "raw_evidence_included": {"const": false},
+        "identity_included": {"const": false}
+      }
+    },
+    "files": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["communication.md", "working-style.md", "claims.json", "manifest.json", "evaluation-summary.json"],
+      "properties": {
+        "communication.md": {"type": "string", "maxLength": 32000},
+        "working-style.md": {"type": "string", "maxLength": 32000},
+        "claims.json": {"type": "string"},
+        "manifest.json": {"type": "string"},
+        "evaluation-summary.json": {"type": "string"}
+      }
+    }
+  }
+}
