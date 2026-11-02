@@ -174,6 +174,12 @@ impl AppState {
         Ok(p)
     }
     pub fn enqueue(&self, job: &crate::model::Job) -> ApiResult<()> {
+        self.enqueue_checked(job, None)
+    }
+    pub fn enqueue_evaluation(&self, job: &Job, profile: &Revision) -> ApiResult<()> {
+        self.enqueue_checked(job, Some(profile))
+    }
+    fn enqueue_checked(&self, job: &Job, profile: Option<&Revision>) -> ApiResult<()> {
         let mut db = self.db.lock().unwrap();
         let tx = db.transaction()?;
         let revision: i64 = tx.query_row(
@@ -182,7 +188,31 @@ impl AppState {
             |r| r.get(0),
         )?;
         let (active, builds): (i64, i64) = tx.query_row("SELECT count(*), coalesce(sum(json_extract(value,'$.kind')='build'),0) FROM jobs WHERE project_id=?1 AND json_extract(value,'$.status') IN ('queued','running')", [&job.project_id], |r| Ok((r.get(0)?,r.get(1)?)))?;
-        if revision != job.source_revision as i64
+        // Evaluation results can advance the project revision while another
+        // variant is being queued. Its immutable profile must still be valid.
+        if let Some(profile) = profile {
+            let raw: String = tx.query_row(
+                "SELECT value FROM projects WHERE id=?1",
+                [&job.project_id],
+                |r| r.get(0),
+            )?;
+            let current: Project =
+                serde_json::from_str(&raw).map_err(|_| ApiError::bad("Invalid project"))?;
+            let valid: Option<bool> = tx.query_row(
+                "SELECT json_extract(value,'$.valid') FROM revisions WHERE id=?1 AND project_id=?2",
+                params![profile.id, job.project_id], |r| r.get(0),
+            ).optional()?;
+            if valid != Some(true)
+                || !crate::profiles::revision_current(&current, &profile.manifest)
+            {
+                return Err(ApiError(
+                    axum::http::StatusCode::CONFLICT,
+                    "Evidence or private identity settings changed. Create replacement profiles."
+                        .into(),
+                ));
+            }
+        }
+        if (profile.is_none() && revision != job.source_revision as i64)
             || builds > 0
             || (job.kind == "build" && active > 0)
             || active >= 16

@@ -54,7 +54,11 @@ pub fn start(
         result_id: None,
     };
     let response = json!(job);
-    state.enqueue(&job)?;
+    if let Some(input) = &evaluation {
+        state.enqueue_evaluation(&job, &input.revision)?;
+    } else {
+        state.enqueue(&job)?;
+    }
     let (cancel, mut rx) = watch::channel(false);
     state.running.lock().unwrap().insert(job.id.clone(), cancel);
     state.audit(

@@ -4,7 +4,13 @@
   const app = document.querySelector("#app"),
     announcer = document.querySelector("#announcer"),
     query = new URLSearchParams(location.search);
-  const storageKey = `twin-workbench-view:${new URL(".", location.href).pathname}`;
+  const storageKey = `persona-workshop-view:${new URL(".", location.href).pathname}`;
+  // Keep the selected view when upgrading an existing browser installation.
+  const previousStorageKey = `twin-workbench-view:${new URL(".", location.href).pathname}`;
+  if (!sessionStorage.getItem(storageKey) && sessionStorage.getItem(previousStorageKey)) {
+    sessionStorage.setItem(storageKey, sessionStorage.getItem(previousStorageKey));
+  }
+  sessionStorage.removeItem(previousStorageKey);
   document.body.classList.toggle("embed", query.get("embed") === "1");
   const S = {
     auth: null,

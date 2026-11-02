@@ -200,7 +200,7 @@ fn snapshot(s: &AppState, p: &Project) -> ApiResult<Json<Value>> {
 async fn descriptor(State(s): S, h: HeaderMap) -> ApiResult<Json<Value>> {
     auth::check(&s, &h, "observe", false)?;
     Ok(Json(
-        json!({"name":"Persona Workshop","version":env!("CARGO_PKG_VERSION"),"kind":"evidence-to-profile","package_schema":"twin-profile/1","capabilities":["text-import","document-import","recording-provider","blind-comparison","revision-diff","speaker-attribution","two-collections","evidence-review","profile-export","agents-md-export","soul-md-export","agents-md-merge","agent-profile-management","simulation-evaluation","semantic-views"],"ui":"./","embed":"?embed=1","api":"api/v1","contract":"twin-workbench.management/1"}),
+        json!({"name":"Persona Workshop","version":env!("CARGO_PKG_VERSION"),"kind":"evidence-to-profile","package_schema":"twin-profile/1","capabilities":["text-import","document-import","recording-provider","blind-comparison","revision-diff","speaker-attribution","two-collections","evidence-review","profile-export","agents-md-export","soul-md-export","agents-md-merge","agent-profile-management","simulation-evaluation","semantic-views"],"ui":"./","embed":"?embed=1","api":"api/v1","contract":"persona-workshop.management/1"}),
     ))
 }
 async fn status(State(s): S, h: HeaderMap) -> ApiResult<Json<Value>> {

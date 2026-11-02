@@ -4,16 +4,16 @@ use axum::{
     body::{Body, to_bytes},
     http::{Request, StatusCode, header},
 };
-use serde_json::{Value, json};
-use std::{collections::BTreeMap, path::PathBuf, sync::Arc, time::Duration};
-use tempfile::TempDir;
-use tower::ServiceExt;
-use twin_workbench::{
+use persona_workshop::{
     auth,
     config::{Config, Extractor},
     server,
     state::{AppState, now_ms},
 };
+use serde_json::{Value, json};
+use std::{collections::BTreeMap, path::PathBuf, sync::Arc, time::Duration};
+use tempfile::TempDir;
+use tower::ServiceExt;
 
 struct Fixture {
     _home: TempDir,
@@ -33,7 +33,7 @@ impl Fixture {
             bind: "127.0.0.1".into(),
             port: 0,
             public_url: "https://fixture.test:18448".into(),
-            pam_service: "twin-workbench".into(),
+            pam_service: "persona-workshop".into(),
             tls_cert: home.path().join("unused.crt"),
             tls_key: home.path().join("unused.key"),
             tls_ca: None,
@@ -1002,6 +1002,57 @@ async fn parallel_evaluation_variants_complete_without_invalidating_each_other()
     let unchanged = f.read(&p).await;
     assert_eq!(unchanged["revision"], after["revision"]);
     assert!(unchanged["evaluations"][0]["rating"].is_null());
+}
+
+#[tokio::test]
+async fn evaluation_enqueue_tolerates_completed_variants_but_rechecks_identity() {
+    use persona_workshop::{
+        jobs,
+        model::{Project, Revision},
+    };
+    let f = Fixture::new("profiles");
+    let p = f.project().await;
+    let p = f.owner_preference(&p).await;
+    let r = f.compile(&p).await;
+    let p = f.read(&p).await;
+    let saved: Project = f.state.project(p["id"].as_str().unwrap()).unwrap();
+    let profile: Revision = serde_json::from_value(r.clone()).unwrap();
+    let first = f.start_evaluation(&p, &r, "communication").await;
+    assert_eq!(f.wait(&first).await["status"], "complete");
+    // Reproduce completion between reading the project and enqueuing a variant.
+    let next = jobs::start(
+        f.state.clone(),
+        saved.clone(),
+        saved.revision,
+        Some(jobs::EvaluationInput {
+            revision: profile.clone(),
+            scenario: "Discuss a reversible experiment.".into(),
+            variant: "working".into(),
+        }),
+    )
+    .unwrap();
+    assert_eq!(f.wait(&next).await["status"], "complete");
+    let current = f.read(&p).await;
+    f.ok(
+        "PUT",
+        &format!("{}/identity", project_path(&p)),
+        Some(json!({
+            "expected_revision":current["revision"], "bindings":{"alias":"Changed private identity"}
+        })),
+    )
+    .await;
+    let rejected = jobs::start(
+        f.state.clone(),
+        saved.clone(),
+        saved.revision,
+        Some(jobs::EvaluationInput {
+            revision: profile,
+            scenario: "Discuss a reversible experiment.".into(),
+            variant: "both".into(),
+        }),
+    )
+    .unwrap_err();
+    assert_eq!(rejected.0, StatusCode::CONFLICT);
 }
 
 #[tokio::test]

@@ -1,7 +1,7 @@
 //! File-format compatibility checks, not model impersonation/fidelity claims.
+use persona_workshop::{auth::digest, model::Revision, portable};
 use serde_json::json;
 use std::{collections::BTreeMap, io::Read};
-use twin_workbench::{auth::digest, model::Revision, portable};
 
 fn revision() -> Revision {
     let files = BTreeMap::from([

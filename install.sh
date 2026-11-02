@@ -2,7 +2,8 @@
 set -euo pipefail
 umask 077
 repo_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-instance_home="${XDG_DATA_HOME:-$HOME/.local/share}/twin-workbench/default"
+instance_home="${XDG_DATA_HOME:-$HOME/.local/share}/persona-workshop/default"
+home_selected=0
 bind=127.0.0.1
 port=0
 public_url=
@@ -10,7 +11,7 @@ extractor_config=
 open_browser=1
 while (($#)); do
   case "$1" in
-    --home) instance_home=$2; shift 2;;
+    --home) instance_home=$2; home_selected=1; shift 2;;
     --bind) bind=$2; shift 2;;
     --port) port=$2; shift 2;;
     --public-url) public_url=$2; shift 2;;
@@ -19,6 +20,11 @@ while (($#)); do
     *) echo "Unknown option: $1" >&2; exit 2;;
   esac
 done
+# Reuse an older installation's data instead of creating an empty replacement.
+legacy_home="${XDG_DATA_HOME:-$HOME/.local/share}/twin-workbench/default"
+if [[ "$home_selected" == 0 && ! -e "$instance_home" && -f "$legacy_home/config.json" ]]; then
+  instance_home=$legacy_home
+fi
 [[ $(uname -s) == Linux ]] || { echo 'This first installer supports Linux with PAM and systemd.' >&2; exit 1; }
 if ! command -v cc >/dev/null || ! pkg-config --exists pam 2>/dev/null; then
   command -v apt-get >/dev/null || { echo 'Install a C compiler, pkg-config and PAM development headers, then retry.' >&2; exit 1; }
@@ -42,30 +48,39 @@ mkdir -p "$instance_home"
 instance_home=$(realpath "$instance_home")
 chmod 700 "$instance_home"
 mkdir -p "$instance_home/bin"
-install -m 700 "$repo_dir/target/release/twin-workbench" "$instance_home/bin/twin-workbench.next"
-mv "$instance_home/bin/twin-workbench.next" "$instance_home/bin/twin-workbench"
+install -m 700 "$repo_dir/target/release/persona-workshop" "$instance_home/bin/persona-workshop.next"
+mv "$instance_home/bin/persona-workshop.next" "$instance_home/bin/persona-workshop"
 if [[ ! -f "$instance_home/config.json" ]]; then
   args=(--home "$instance_home" init --owner "$(id -un)" --bind "$bind" --port "$port" --public-url "$public_url")
   [[ -z "$extractor_config" ]] || args+=(--extractor-config "$extractor_config")
-  "$instance_home/bin/twin-workbench" "${args[@]}"
+  "$instance_home/bin/persona-workshop" "${args[@]}"
 fi
-if [[ ! -f /etc/pam.d/twin-workbench ]]; then
-  sudo install -m 644 "$repo_dir/ops/pam-twin-workbench" /etc/pam.d/twin-workbench
+if [[ ! -f /etc/pam.d/persona-workshop ]]; then
+  sudo install -m 644 "$repo_dir/ops/pam-persona-workshop" /etc/pam.d/persona-workshop
 fi
 instance_id=$(python3 - "$instance_home/config.json" <<'PY'
 import json,sys
 print(json.load(open(sys.argv[1]))['id'])
 PY
 )
-service_name="twin-workbench-$instance_id.service"
-mkdir -p "$HOME/.config/systemd/user"
-python3 - "$instance_home" "$HOME/.config/systemd/user/$service_name" <<'PY'
+service_name="persona-workshop-$instance_id.service"
+# Retire the previous service before starting the new name on the same data.
+legacy_service="twin-workbench-$instance_id.service"
+if systemctl --user cat "$legacy_service" >/dev/null 2>&1; then
+  systemctl --user disable --now "$legacy_service"
+fi
+if [[ -e "$instance_home/bin/twin-workbench" ]]; then
+  ln -sfn persona-workshop "$instance_home/bin/twin-workbench"
+fi
+unit_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+mkdir -p "$unit_dir"
+python3 - "$instance_home" "$unit_dir/$service_name" <<'PY'
 from pathlib import Path
 import sys
 home,out=map(Path,sys.argv[1:])
 def quote(p):
     return '"'+str(p).replace('\\','\\\\').replace('"','\\"').replace('%','%%')+'"'
-Path(out).write_text('[Unit]\nDescription=Persona Workshop\nAfter=network-online.target\n\n[Service]\nType=simple\nExecStart='+quote(home/'bin/twin-workbench')+' --home '+quote(home)+' serve\nRestart=on-failure\nRestartSec=3\nUMask=0077\n\n[Install]\nWantedBy=default.target\n')
+Path(out).write_text('[Unit]\nDescription=Persona Workshop\nAfter=network-online.target\n\n[Service]\nType=simple\nExecStart='+quote(home/'bin/persona-workshop')+' --home '+quote(home)+' serve\nRestart=on-failure\nRestartSec=3\nUMask=0077\n\n[Install]\nWantedBy=default.target\n')
 PY
 systemctl --user daemon-reload
 systemctl --user enable --now "$service_name"

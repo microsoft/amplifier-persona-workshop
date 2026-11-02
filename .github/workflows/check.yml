@@ -18,6 +18,7 @@ jobs:
       - run: cargo build --locked
       - run: python3 tests/test_import_document.py
       - run: python3 tests/test_transcription_adapter.py
+      - run: python3 tests/test_installer.py
       - uses: actions/setup-node@v4
         with:
           node-version: 22
