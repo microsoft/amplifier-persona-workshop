@@ -13,7 +13,7 @@ The product is **Persona Workshop**. The executable, installation paths and `twi
 Linux with PAM and systemd is supported by this installer. Rust and build dependencies are installed if missing. The UI works in a browser on other operating systems; native Windows/macOS services are not implemented in this first version.
 
 ```bash
-gh repo clone microsoft/amplifier-persona-workshop
+git clone https://github.com/microsoft/amplifier-persona-workshop.git
 cd amplifier-persona-workshop
 ./install.sh --extractor-config /absolute/path/to/analysis-acp.json
 ```
