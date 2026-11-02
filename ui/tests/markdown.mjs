@@ -1,9 +1,10 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import http from 'node:http';
+import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
 const {chromium} = await import(process.env.PLAYWRIGHT_MODULE || 'playwright');
-const ui = path.join(process.cwd(), 'ui');
+const ui = fileURLToPath(new URL('../', import.meta.url));
 const script = await fs.readFile(path.join(ui, 'markdown.js'), 'utf8') + await fs.readFile(path.join(ui, 'markdown-renderer.js'), 'utf8');
 const css = await fs.readFile(path.join(ui, 'markdown.css'), 'utf8');
 const server = http.createServer((req,res) => {
@@ -11,7 +12,8 @@ const server = http.createServer((req,res) => {
   else res.end(`<style>body{margin:12px}.markdown{max-width:100%}${css}</style><main class="markdown"></main><script src="/markdown.js"></script>`);
 });
 await new Promise(resolve => server.listen(0,'127.0.0.1',resolve));
-const browser = await chromium.launch({headless:true,args:['--no-sandbox']});
+const browser = await chromium.launch({headless:true,args:['--no-sandbox'],
+  ...(process.env.CHROMIUM_EXECUTABLE ? {executablePath:process.env.CHROMIUM_EXECUTABLE} : {})});
 try {
   const page=await browser.newPage({viewport:{width:390,height:844}});
   const external=[]; page.on('request', r=>{if(!r.url().startsWith('http://127.0.0.1:'))external.push(r.url());});
