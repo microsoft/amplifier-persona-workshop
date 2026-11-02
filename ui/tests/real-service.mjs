@@ -113,6 +113,8 @@ try {
         () => window.twinWorkbench?.snapshot().busy === false,
       ),
     act = async (action, payload = {}) => {
+      // A click may paint the next dialog before its state has finished saving.
+      await idle();
       await page.evaluate(
         async ({ action, payload }) =>
           window.twinWorkbench.act(action, payload),
@@ -273,7 +275,8 @@ try {
   let nextDownload = page.waitForEvent("download");
   await act("export.download");
   const workspaceFiles = await readZip(await nextDownload);
-  assert(workspaceFiles["AGENTS.md"].startsWith(originalAgents));
+  assert(workspaceFiles["AGENTS.md"].startsWith(originalAgents),
+    `Existing instructions changed: ${JSON.stringify(workspaceFiles["AGENTS.md"].slice(0, 160))}`);
   assert(workspaceFiles["AGENTS.md"].includes("persona/communication.md"));
   assert.equal(workspaceFiles["persona/communication.md"], packageData.files["communication.md"]);
   const sharedView = await page.evaluate(() => window.personaWorkshop.snapshot().view);

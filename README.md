@@ -14,7 +14,7 @@ Linux with PAM and systemd is supported by this installer. Rust and build depend
 
 ```bash
 gh repo clone microsoft/amplifier-persona-workshop
-cd twin-workbench
+cd amplifier-persona-workshop
 ./install.sh --extractor-config /absolute/path/to/analysis-acp.json
 ```
 

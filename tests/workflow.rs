@@ -581,7 +581,7 @@ async fn portable_exports_require_current_authorized_profiles_and_keep_merge_inp
     );
     let bytes = to_bytes(downloaded.into_body(), 1024 * 1024).await.unwrap();
     let zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
-    assert!(zip.file_names().any(|name| name == "AGENTS.md"));
+    assert!(zip.file_names().any(|name| name.unwrap() == "AGENTS.md"));
 
     assert_eq!(
         request(&f.app, "GET", &path, None, None).await.0,
