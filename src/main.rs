@@ -1,13 +1,13 @@
 use anyhow::{Context, Result, ensure};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use clap::{Parser, Subcommand};
-use serde_json::{Value, json};
-use std::path::{Path, PathBuf};
-use twin_workbench::{
+use persona_workshop::{
     config::{self, Config, Extractor},
     server,
     state::AppState,
 };
+use serde_json::{Value, json};
+use std::path::{Path, PathBuf};
 
 #[derive(Parser)]
 #[command(
@@ -113,7 +113,7 @@ async fn main() -> Result<()> {
                 bind,
                 port,
                 public_url,
-                pam_service: "twin-workbench".into(),
+                pam_service: "persona-workshop".into(),
                 tls_cert,
                 tls_key,
                 tls_ca,
@@ -202,7 +202,7 @@ async fn main() -> Result<()> {
                 .map(|path| -> Result<String> {
                     ensure!(
                         std::fs::metadata(&path)?.len()
-                            <= twin_workbench::portable::MAX_EXISTING_BYTES as u64,
+                            <= persona_workshop::portable::MAX_EXISTING_BYTES as u64,
                         "AGENTS.md must be 256 KB or smaller"
                     );
                     Ok(std::fs::read_to_string(path)?)
@@ -246,7 +246,7 @@ async fn main() -> Result<()> {
                 let text = value.as_str().context("Invalid package content")?;
                 if name != "manifest.json" && name != "persona/metadata/manifest.json" {
                     ensure!(
-                        package["manifest"]["files"][name] == twin_workbench::auth::digest(text),
+                        package["manifest"]["files"][name] == persona_workshop::auth::digest(text),
                         "Package digest mismatch"
                     );
                 }

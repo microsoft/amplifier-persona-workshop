@@ -131,7 +131,7 @@ pub async fn run(c: &Extractor, prompt: &str) -> Result<String> {
 }
 async fn run_inner(c: &Extractor, prompt: &str) -> Result<String> {
     let mut peer = Peer::start(c).await?;
-    let init=peer.request("initialize",json!({"protocolVersion":1,"clientInfo":{"name":"twin-workbench","version":env!("CARGO_PKG_VERSION")},"clientCapabilities":{}})).await?;
+    let init=peer.request("initialize",json!({"protocolVersion":1,"clientInfo":{"name":"persona-workshop","version":env!("CARGO_PKG_VERSION")},"clientCapabilities":{}})).await?;
     ensure!(init["protocolVersion"] == 1, "Unsupported ACP version");
     let session = peer
         .request("session/new", json!({"cwd":c.cwd,"mcpServers":[]}))

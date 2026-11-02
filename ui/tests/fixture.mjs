@@ -7,7 +7,7 @@ const { chromium } = await import(
   process.env.PLAYWRIGHT_MODULE || "playwright"
 );
 const ui = path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."),
-  output = process.env.UI_ARTIFACTS || "/tmp/twin-workbench-ui";
+  output = process.env.UI_ARTIFACTS || "/tmp/persona-workshop-ui";
 await fs.mkdir(output, { recursive: true });
 const prefix = "/embedded/twin/",
   views = new Map(),
@@ -546,7 +546,7 @@ const ok = (m) => {
     console.log(`PASS ${m}`);
   },
   idle = () =>
-    page.waitForFunction(() => window.twinWorkbench?.snapshot().busy === false),
+    page.waitForFunction(() => window.personaWorkshop?.snapshot().busy === false),
   click = async (action) => {
     await page.locator(`[data-action="${action}"]`).first().click();
     await idle();
@@ -647,7 +647,7 @@ try {
   await page.locator(".job").waitFor();
   await page.waitForFunction(
     () =>
-      window.twinWorkbench.snapshot().jobs.some((j) => j.status === "complete"),
+      window.personaWorkshop.snapshot().jobs.some((j) => j.status === "complete"),
     null,
     { timeout: 12000 },
   );
@@ -785,7 +785,7 @@ try {
     newest = historyProject.revisions.at(-1);
   oldest.valid = false;
   change(historyProject);
-  await page.evaluate(() => window.twinWorkbench.act("refresh"));
+  await page.evaluate(() => window.personaWorkshop.act("refresh"));
   await idle();
   await page
     .locator('[data-field="profile_revision_id"]')
@@ -800,20 +800,20 @@ try {
   );
   assert.equal(
     await page.evaluate(
-      () => window.twinWorkbench.snapshot().view.draft.profile_pinned,
+      () => window.personaWorkshop.snapshot().view.draft.profile_pinned,
     ),
     true,
   );
   await page.reload();
   await page.waitForFunction(
-    () => window.twinWorkbench?.snapshot().view?.draft.profile_pinned,
+    () => window.personaWorkshop?.snapshot().view?.draft.profile_pinned,
   );
   assert.equal(
     await page.locator('[data-field="profile_revision_id"]').inputValue(),
     oldest.id,
   );
   assert.equal(
-    await page.evaluate(() => window.twinWorkbench.snapshot().error),
+    await page.evaluate(() => window.personaWorkshop.snapshot().error),
     "",
   );
   await click("profile.latest");
@@ -914,7 +914,7 @@ try {
   );
   const evaluatedRevision = [...projects.values()][0].evaluations[0]
     .revision_id;
-  await page.evaluate(() => window.twinWorkbench.act("profile.create"));
+  await page.evaluate(() => window.personaWorkshop.act("profile.create"));
   await idle();
   await click("screen.evaluate");
   assert.equal(await page.locator(".evaluation").count(), 0);
@@ -955,7 +955,7 @@ try {
         "REMOTE DEBUG",
         JSON.stringify({
           server: v,
-          browser: await page.evaluate(() => window.twinWorkbench.snapshot()),
+          browser: await page.evaluate(() => window.personaWorkshop.snapshot()),
           hidden: await page.evaluate(() => document.hidden),
         }),
       );
@@ -985,7 +985,7 @@ try {
   ok("Remote draft/focus changes do not steal control; human input takes over");
   await page.reload();
   await page.waitForFunction(
-    () => window.twinWorkbench?.snapshot().view?.screen === "evaluate",
+    () => window.personaWorkshop?.snapshot().view?.screen === "evaluate",
   );
   assert.equal(
     await page.locator('[data-draft="scenario"]').inputValue(),
@@ -1025,14 +1025,14 @@ try {
   jobs.set(externalJob.id, externalJob);
   externalProject.builds.push(externalJob);
   await page.waitForFunction(
-    (id) => window.twinWorkbench.snapshot().jobs.some((j) => j.id === id),
+    (id) => window.personaWorkshop.snapshot().jobs.some((j) => j.id === id),
     externalJob.id,
     { timeout: 10000 },
   );
   await page.waitForFunction(
     (id) =>
-      window.twinWorkbench.snapshot().view.screen === "profiles" &&
-      window.twinWorkbench
+      window.personaWorkshop.snapshot().view.screen === "profiles" &&
+      window.personaWorkshop
         .snapshot()
         .jobs.some((j) => j.id === id && j.status === "complete"),
     externalJob.id,
@@ -1070,7 +1070,7 @@ try {
     "Two-times browser zoom equivalent viewport keeps the full document and controls readable",
   );
   await page.goto(origin + prefix + "?embed=1");
-  await page.waitForFunction(() => window.twinWorkbench?.snapshot().view);
+  await page.waitForFunction(() => window.personaWorkshop?.snapshot().view);
   assert.equal(await page.locator(".sidebar").isVisible(), false);
   assert.equal(await page.locator(".topbar").isVisible(), false);
   await page.setViewportSize({ width: 390, height: 844 });

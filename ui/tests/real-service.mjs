@@ -14,10 +14,10 @@ const root = path.resolve(
     "../..",
   ),
   binary =
-    process.env.TWIN_BINARY || path.join(root, "target/debug/twin-workbench"),
+    process.env.PERSONA_BINARY || path.join(root, "target/debug/persona-workshop"),
   home = await fs.mkdtemp(path.join(os.tmpdir(), "twin-ui-service-"));
 await fs.chmod(home, 0o700);
-const output = process.env.UI_ARTIFACTS || "/tmp/twin-workbench-ui";
+const output = process.env.UI_ARTIFACTS || "/tmp/persona-workshop-ui";
 await fs.mkdir(output, { recursive: true });
 let service, browser;
 const errors = [];
@@ -110,25 +110,25 @@ try {
   page.on("pageerror", (e) => errors.push(e.message));
   const idle = () =>
       page.waitForFunction(
-        () => window.twinWorkbench?.snapshot().busy === false,
+        () => window.personaWorkshop?.snapshot().busy === false,
       ),
     act = async (action, payload = {}) => {
       // A click may paint the next dialog before its state has finished saving.
       await idle();
       await page.evaluate(
         async ({ action, payload }) =>
-          window.twinWorkbench.act(action, payload),
+          window.personaWorkshop.act(action, payload),
         { action, payload },
       );
       await idle();
       const error = await page.evaluate(
-        () => window.twinWorkbench.snapshot().error,
+        () => window.personaWorkshop.snapshot().error,
       );
       assert.equal(error, "", `${action}: ${error}`);
     },
     set = async (key, value) =>
       page.evaluate(
-        ({ key, value }) => window.twinWorkbench.setDraft(key, value),
+        ({ key, value }) => window.personaWorkshop.setDraft(key, value),
         { key, value },
       );
   await page.goto(origin);
@@ -145,7 +145,7 @@ try {
   );
   await act("project.create");
   let project = await page.evaluate(
-    () => window.twinWorkbench.snapshot().project,
+    () => window.personaWorkshop.snapshot().project,
   );
   assert(project.id);
   ok("Semantic UI actions create a real persisted project");
@@ -171,7 +171,7 @@ try {
   });
   await page.evaluate(
     async (raw) =>
-      window.twinWorkbench.importSource({
+      window.personaWorkshop.importSource({
         name: "Synthetic normalized chat",
         kind: "chat",
         text: raw,
@@ -181,14 +181,14 @@ try {
   );
   await idle();
   assert.equal(
-    await page.evaluate(() => window.twinWorkbench.snapshot().error),
+    await page.evaluate(() => window.personaWorkshop.snapshot().error),
     "",
   );
   assert.equal(await page.locator(".span-item.excluded").count(), 2);
   await act("source.save");
   ok("Normalized-chat import and speaker roles work against the actual parser");
   await page.evaluate(() =>
-    window.twinWorkbench.importSource({
+    window.personaWorkshop.importSource({
       name: "Existing communication profile",
       kind: "profile",
       text: "## Voice\nUse concrete examples and connected paragraphs.",
@@ -211,7 +211,7 @@ try {
   await act("build.start");
   await page.waitForFunction(
     () =>
-      window.twinWorkbench.snapshot().jobs.some((j) => j.status === "complete"),
+      window.personaWorkshop.snapshot().jobs.some((j) => j.status === "complete"),
     null,
     { timeout: 15000 },
   );
@@ -307,10 +307,10 @@ try {
   ok("Browser and CLI export actual workspace files, preserve existing AGENTS.md idempotently, and keep private merge text out of shared state");
   await act("profile.create");
   const newest = await page.evaluate(
-    () => window.twinWorkbench.snapshot().view.profile_revision_id,
+    () => window.personaWorkshop.snapshot().view.profile_revision_id,
   );
   await page.evaluate(() =>
-    window.twinWorkbench.control({ profile_revision_id: null }),
+    window.personaWorkshop.control({ profile_revision_id: null }),
   );
   await act("screen.profiles");
   await act("details.toggle", { key: "profile_details" });
@@ -404,7 +404,7 @@ try {
   assert(!(await page.locator(".span-list").innerText()).includes("Hidden text"));
   await act("modal.close");
   ok("Document import uses the live converter, previews authored spans, and preserves holdout choice");
-  const view = await page.evaluate(() => window.twinWorkbench.snapshot().view);
+  const view = await page.evaluate(() => window.personaWorkshop.snapshot().view);
   await page.waitForTimeout(1000);
   const current = await (
     await page.request.get(`${origin}/api/v1/views/${view.id}`)
@@ -431,8 +431,8 @@ try {
   assert(response.ok(), await response.text());
   await page.waitForFunction(
     () =>
-      window.twinWorkbench.snapshot().view.screen === "review" &&
-      window.twinWorkbench.snapshot().view.tab === "working",
+      window.personaWorkshop.snapshot().view.screen === "review" &&
+      window.personaWorkshop.snapshot().view.tab === "working",
   );
   assert(
     (await page.locator(".observation").innerText()).includes(

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Deterministic, tool-free ACP endpoint for synthetic Twin Workbench tests."""
+"""Deterministic, tool-free ACP endpoint for synthetic Persona Workshop tests."""
 import json
 import os
 from pathlib import Path

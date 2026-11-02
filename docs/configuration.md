@@ -1,6 +1,6 @@
 # Configuration
 
-`config.json` belongs to the private installation. `twin-workbench --home PATH config get` reads it, and `config set --file CONFIG.json` validates a replacement. Restart the service to apply changes. Installation ID and owner cannot be changed by that command. Configuration may contain provider environment values; keep it private.
+`config.json` belongs to the private installation. `persona-workshop --home PATH config get` reads it, and `config set --file CONFIG.json` validates a replacement. Restart the service to apply changes. Installation ID and owner cannot be changed by that command. Configuration may contain provider environment values; keep it private.
 
 The extractor file passed to the installer has this shape:
 
@@ -34,8 +34,11 @@ No restart is required. Reconnecting the same instance updates its access token;
 forgetting a connection removes local access while leaving the agent running.
 Profile copies and restore history belong to the agent. Future workshop builds
 do not change those copies until an operator explicitly applies a saved version.
-The product is now Persona Workshop; existing `twin-workbench` executable,
-service, storage, cookie and package identifiers are retained for compatibility.
+The executable and service are named `persona-workshop`. New installations use
+`~/.local/share/persona-workshop/default`. The installer recognizes the previous
+default installation, reuses its existing folder, configuration and projects,
+and replaces its running service. Pass `--home` to select an existing custom
+installation. Cookie and portable package formats remain compatible.
 
 Normalized chat import accepts an array or `{"messages":[...]}` with records such as:
 

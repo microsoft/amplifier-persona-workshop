@@ -20,7 +20,7 @@ node real-service.mjs
 
 This second check creates a private temporary installation and a deterministic tool-free ACP extractor, authenticates the browser using that installation's generated management credential, and removes the installation afterward. It tests automatic source-to-profile creation, existing-profile reference attribution, and four separately queued evaluation variants. Before opening the browser, OpenSSL verifies the generated certificate chain and IP identity, and the actual CLI connects with CA verification enabled. The temporary browser context ignores certificate errors because the disposable CA is not installed into the machine/browser trust store; the earlier checks validate trust independently. The test does not read any person's artifacts, connect a real model, or change machine authentication.
 
-`TWIN_BINARY` can select another built service. `PLAYWRIGHT_MODULE` and `CHROMIUM_EXECUTABLE` can select existing browser tooling. Screenshots go to `/tmp/twin-workbench-ui` by default; override with `UI_ARTIFACTS`. Screenshots from these tests contain only synthetic data.
+`PERSONA_BINARY` can select another built service. `PLAYWRIGHT_MODULE` and `CHROMIUM_EXECUTABLE` can select existing browser tooling. Screenshots go to `/tmp/persona-workshop-ui` by default; override with `UI_ARTIFACTS`. Screenshots from these tests contain only synthetic data.
 
 ## Default workflow
 
@@ -38,12 +38,12 @@ shared display state and the source file is unchanged.
 
 Every interface action has a stable `data-action` identifier. The in-page interface exposes:
 
-- `window.twinWorkbench.actions()` — available semantic action names.
-- `window.twinWorkbench.snapshot()` — display state, busy/error state, project identifiers and job progress; excludes private input buffers.
-- `window.twinWorkbench.act(name, payload)` — invokes the same action as the UI. Inspect `snapshot().error` afterward for an actionable failure.
-- `window.twinWorkbench.setDraft(key, value)` — changes an allowed public form draft and synchronizes it to the service.
-- `window.twinWorkbench.control(values)` — updates semantic display fields using the revisioned view API.
-- `window.twinWorkbench.importSource({name,kind,text,collections,holdout})` — explicit private-source submission; raw text never enters the view draft.
+- `window.personaWorkshop.actions()` — available semantic action names.
+- `window.personaWorkshop.snapshot()` — display state, busy/error state, project identifiers and job progress; excludes private input buffers.
+- `window.personaWorkshop.act(name, payload)` — invokes the same action as the UI. Inspect `snapshot().error` afterward for an actionable failure.
+- `window.personaWorkshop.setDraft(key, value)` — changes an allowed public form draft and synchronizes it to the service.
+- `window.personaWorkshop.control(values)` — updates semantic display fields using the revisioned view API.
+- `window.personaWorkshop.importSource({name,kind,text,collections,holdout})` — explicit private-source submission; raw text never enters the view draft.
 
 Sign-in and private identity values can be passed directly to `act('auth.login', {username,password})` and `act('identity.save', {json})`; do not put these into shared draft fields. The service's regular authenticated APIs remain the authority for all project changes. View control provides navigation, selected items, filters, public drafts, dialogs, semantic focus targets, and scroll coordinates. Private identity is not fetched merely because a remote view command opens its dialog.
 

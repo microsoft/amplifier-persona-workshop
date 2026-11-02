@@ -6,7 +6,7 @@ Create an inspectable simulation profile from selected evidence, with separate c
 
 Import text/Markdown meeting transcripts, chats, notes, normalized JSON chat records, an existing profile, EML email, HTML, DOCX, ODT, or text-based PDF. Diarized transcript JSON is supported directly; raw recordings use an operator-configured transcription provider. A configured ACP endpoint extracts person-specific guidance and creates two portable Markdown files: **how they communicate** and **how they think and work**. Try them in a scenario, correct the guidance, or inspect its sources. Review metadata stays separate from the instructions an agent loads.
 
-The product is **Persona Workshop**. The executable, installation paths and `twin-profile/1` package identifiers remain compatible.
+The service, executable and new installation folders use **Persona Workshop**. Existing installations can be upgraded in place; saved projects and the `twin-profile/1` export format remain compatible.
 
 ## Install
 
@@ -41,8 +41,8 @@ The [v1 package schema](schemas/twin-profile.schema.json) describes the portable
 ## CLI and automation
 
 ```bash
-INSTANCE="$HOME/.local/share/twin-workbench/default"
-APP="$INSTANCE/bin/twin-workbench"
+INSTANCE="$HOME/.local/share/persona-workshop/default"
+APP="$INSTANCE/bin/persona-workshop"
 "$APP" --home "$INSTANCE" status
 "$APP" --home "$INSTANCE" api GET /api/v1/projects
 "$APP" --home "$INSTANCE" api POST /api/v1/projects --body-file project.json
@@ -56,7 +56,7 @@ The CLI authenticates locally with a private installation control credential, ne
 
 Workspace exports keep provenance in `persona/metadata/`. The AGENTS.md loader references `persona/communication.md` and `persona/working-style.md`; extract the ZIP at the workspace root and keep those relative paths together. If the workspace already has an AGENTS.md, choose **Keep an existing AGENTS.md**: only the marked Persona Workshop section is added or replaced. All other content stays unchanged, and repeating the export does not duplicate the section. The existing file is used only to create your download; the workshop does not save it. CLI `--agents-file` also leaves the source file untouched. SOUL.md contains both instruction profiles directly; combine it with any existing SOUL.md before replacing that file. See [portable exports](docs/portable-exports.md) for host loading details and automation.
 
-The UI supports `?embed=1`; configure allowed HTTPS frame origins explicitly. Same-origin embedding can call `window.personaWorkshop` (`window.twinWorkbench` remains compatible); cross-origin hosts can use the authenticated semantic HTTP API. Authentication/session provisioning is the host's responsibility. A future fleet UI can integrate these contracts without depending on this service's internals.
+The UI supports `?embed=1`; configure allowed HTTPS frame origins explicitly. Same-origin embedding can call `window.personaWorkshop`; cross-origin hosts can use the authenticated semantic HTTP API. Authentication/session provisioning is the host's responsibility. A future fleet UI can integrate these contracts without depending on this service's internals.
 
 ## Boundaries and current limits
 
@@ -77,7 +77,7 @@ cargo clippy --all-targets -- -D warnings
 cargo build --release --locked
 ```
 
-Tests use synthetic sources and a deterministic ACP fixture; no model account is needed. Browser checks live in `tests/` with their own dependency setup. Real-model trials complement these protocol tests but do not establish human fidelity.
+Tests use synthetic sources and a deterministic ACP fixture; no model account is needed. Browser checks live in `ui/tests/` with their own dependency setup. Real-model trials complement these protocol tests but do not establish human fidelity.
 
 Management clients can obtain a named installation credential through `POST /api/v1/tokens` using an administrator credential. Supply `scopes` (for example `["observe"]`) and `expires_in_seconds`. Values are returned once; `GET /api/v1/tokens` lists metadata and `DELETE /api/v1/tokens/{id}` revokes access. Observation access does not allow edits, builds, exports or private identity reads.
 

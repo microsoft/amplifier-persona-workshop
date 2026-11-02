@@ -2093,8 +2093,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
 
 [[package]]
-name = "twin-workbench"
-version = "0.5.0"
+name = "persona-workshop"
+version = "0.5.1"
 dependencies = [
  "anyhow",
  "axum",
