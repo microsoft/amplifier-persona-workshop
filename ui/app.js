@@ -821,6 +821,7 @@
     return `<div class="modal-backdrop"><section class="modal ${wide ? "wide" : ""}" role="dialog" aria-modal="true" aria-labelledby="modal-title" tabindex="-1"><div class="modal-head"><div><h2 id="modal-title">${esc(title)}</h2>${description ? `<p>${esc(description)}</p>` : ""}</div><button type="button" class="icon-button" data-action="modal.close" aria-label="Close dialog">×</button></div>${S.error ? `<div class="banner error" role="alert">${esc(S.error)}</div>` : ""}${body}</section></div>`;
   }
   function render() {
+    document.title = S.auth?.authenticated && S.project?.alias ? `${S.project.alias}: Persona Workshop` : "Persona Workshop";
     const active = document.activeElement,
       focusKey =
         active?.dataset?.draft ||
