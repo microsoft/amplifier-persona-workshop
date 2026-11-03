@@ -732,7 +732,7 @@ try {
     fullPage: true,
   });
   ok("Portable export preserves two profile files while omitting raw evidence");
-  assert.equal(await page.title(), "Persona Workshop");
+  assert.equal(await page.title(), "Alex · product collaboration: Persona Workshop");
   assert.equal(await page.evaluate(() => window.personaWorkshop === window.twinWorkbench), true);
   await click("agent.open");
   await page.getByRole("heading", { name: "Use on agent", exact: true }).waitFor();
