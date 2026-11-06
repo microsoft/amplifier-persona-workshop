@@ -3,17 +3,12 @@ use crate::config::Extractor;
 use anyhow::{Context, Result, bail, ensure};
 use serde_json::{Value, json};
 use std::{process::Stdio, time::Duration};
-use tokio::{
-    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
-    process::{Child, ChildStdin, ChildStdout, Command},
-};
+use tokio::process::{Child, Command};
 
 struct Peer {
     child: Child,
-    input: ChildStdin,
-    output: BufReader<ChildStdout>,
+    connection: amplifier_acp_connection::Connection,
     pid: u32,
-    next: u64,
 }
 impl Drop for Peer {
     fn drop(&mut self) {
@@ -59,43 +54,23 @@ impl Peer {
             .context("Could not start the configured ACP extractor")?;
         let pid = child.id().unwrap_or(0);
         let input = child.stdin.take().context("Missing ACP input")?;
-        let output = BufReader::new(child.stdout.take().context("Missing ACP output")?);
+        let output = child.stdout.take().context("Missing ACP output")?;
+        let connection =
+            amplifier_acp_connection::Connection::client(output, input, 4 * 1024 * 1024).await?;
         Ok(Self {
             child,
-            input,
-            output,
+            connection,
             pid,
-            next: 0,
         })
     }
     async fn write(&mut self, v: Value) -> Result<()> {
-        self.input.write_all(format!("{v}\n").as_bytes()).await?;
-        self.input.flush().await?;
-        Ok(())
+        self.connection.sender.send(v)
     }
     async fn read(&mut self) -> Result<Value> {
-        let mut buf = Vec::new();
-        loop {
-            let b = self.output.fill_buf().await?;
-            ensure!(!b.is_empty(), "ACP endpoint closed its output");
-            let n = b
-                .iter()
-                .position(|x| *x == b'\n')
-                .map(|p| p + 1)
-                .unwrap_or(b.len());
-            ensure!(
-                buf.len() + n <= 4 * 1024 * 1024,
-                "ACP frame exceeds the limit"
-            );
-            buf.extend_from_slice(&b[..n]);
-            self.output.consume(n);
-            if buf.last() == Some(&b'\n') {
-                break;
-            }
-        }
-        let v: Value = serde_json::from_slice(&buf)?;
-        ensure!(v["jsonrpc"] == "2.0", "Invalid ACP response");
-        Ok(v)
+        self.connection
+            .recv()
+            .await?
+            .context("ACP endpoint closed its output")
     }
     async fn reject(&mut self, v: &Value) -> Result<()> {
         if v["method"] == "session/request_permission" {
@@ -108,10 +83,7 @@ impl Peer {
         }
     }
     async fn request(&mut self, method: &str, params: Value) -> Result<Value> {
-        self.next += 1;
-        let id = self.next;
-        self.write(json!({"jsonrpc":"2.0","id":id,"method":method,"params":params}))
-            .await?;
+        let id = self.connection.sender.request(method, params)?;
         loop {
             let v = self.read().await?;
             if v.get("method").is_none() && v["id"] == id {
@@ -140,9 +112,10 @@ async fn run_inner(c: &Extractor, prompt: &str) -> Result<String> {
         .as_str()
         .context("Missing ACP session ID")?
         .to_owned();
-    peer.next += 1;
-    let request_id = peer.next;
-    peer.write(json!({"jsonrpc":"2.0","id":request_id,"method":"session/prompt","params":{"sessionId":sid,"prompt":[{"type":"text","text":prompt}]}})).await?;
+    let request_id = peer.connection.sender.request(
+        "session/prompt",
+        json!({"sessionId":sid,"prompt":[{"type":"text","text":prompt}]}),
+    )?;
     let mut output = String::new();
     let mut message_id = None;
     loop {
