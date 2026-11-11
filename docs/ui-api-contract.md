@@ -1,4 +1,10 @@
-# First-slice UI contract
+# Service and reference-client API contract
+
+For clients operating Persona Workshop's evidence, profiles, revisions and jobs.
+These are the concrete service and reference-client interfaces. The existing view
+fields do not prescribe the layout of future products. The [contract map](contracts.md)
+locates profile-content, package and shared family commitments without copying
+them into this API definition.
 
 All paths are relative to the app root. The service is HTTPS/PAM, single owner.
 `GET auth/session` returns `{authenticated, owner, csrf}`; `POST auth/login`
@@ -102,7 +108,7 @@ The export dialog uses modal `profile.export`, public draft `export_format`
 AGENTS.md text is a transient private input, excluded from views and snapshots;
 the HTTP merge route lets an agent perform the same action directly.
 
-## Blind comparisons and revision changes (0.4)
+## Blind comparisons and revision changes
 
 - `POST api/v1/projects/{id}/comparisons` requires `build`, with
   `{expected_revision,scenario,holdout_ids?:[],candidates:[{revision_id,variant},...]}`.
@@ -143,7 +149,7 @@ holds response-specific fields such as `A_communication_fit`, `A_working_fit`,
 `comparison.close`, `comparison.run`, `comparison.rate`/`comparison.reveal`
 (with `{id}`), and `revision.diff`. All have the same browser and API behavior.
 
-## Rich file import (0.4)
+## Rich file import
 
 - `GET api/v1/import-capabilities` requires `observe` and returns supported
   formats, file-size limits, and whether transcription is configured.

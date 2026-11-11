@@ -2,6 +2,14 @@
 
 The same saved profile version can be applied to a Constellation instance or used in another agent's workspace. The exported instructions remain the entity-specific communication and working guidance. Source attribution, confidence, review information and package metadata stay in separate JSON files. Private identity bindings and raw evidence are not exported.
 
+## Privacy and revision validity
+
+Known identity strings are scrubbed from generated exports; this is not a general
+anonymizer, and distinctive behavior can remain identifying. Source removal or
+reassignment, holdout changes and private-identity changes invalidate dependent
+revisions. Already downloaded copies cannot be recalled. The service rejects
+invalidated revisions for further export or application.
+
 ## Formats
 
 | Format | Entry point | Files an agent needs |
