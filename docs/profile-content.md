@@ -25,6 +25,11 @@ Extract how the subject frames problems, makes decisions, allocates attention, h
 
 A build stores its observations, compiled profile version, and completed job in one transaction. A changed project makes the build stale instead of overwriting changes. Rebuilding retains owner rules, accepted/rejected decisions, and edited pending rules. Versions are immutable; source/privacy changes can invalidate them for further use.
 
+Instruction-only profiles declare `instruction_format: 2` in their package
+manifest. Historical versions retain their original contents; the version does
+not retroactively rewrite them. The [portable package schema](../schemas/twin-profile.schema.json)
+owns the field and file structure.
+
 ## Consumer responsibilities
 
 Consumers load `communication.md` and/or `working-style.md` as guidance, with their own identity, permissions, execution and disclosure policies. Those general policies do not belong in person-specific profiles. The workbench's scenario runner supplies its own simulation boundary and never treats simulated replies as permission to act. Profile quality is judged from actual examples and user feedback, not inferred from review labels.
