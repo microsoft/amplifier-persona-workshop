@@ -1,26 +1,34 @@
-# Find the Persona Workshop boundary
+# Persona Workshop agreements
 
-The [vision](VISION.md) describes the intended value. Local commitments and exact
-interfaces live in the documents below; this page only locates them.
+<a id="find-the-persona-workshop-boundary"></a>
 
-| If the work changes… | Authoritative home |
+The [vision](VISION.md) explains the value. Two local boundaries carry the promises
+specific to this component; choose the one your change affects.
+
+| Agreement | What a consumer can rely on |
 | --- | --- |
-| What communication or working-style guidance contains, which evidence is eligible, or how a revision is built | [Profile content](profile-content.md) |
-| The portable package's required fields and file structure | [Package schema](../schemas/twin-profile.schema.json) |
-| Export loading, preservation of existing workspace instructions, or consumer integration | [Portable exports](portable-exports.md) |
-| Authentication, evidence/project operations, jobs, version application, evaluations or reference-client view control | [Service and view API](ui-api-contract.md) |
-| Installed providers and operator settings | [Configuration](configuration.md) |
-| How to exercise a boundary or assess profile quality | [Validation](validation.md) and [verification](verification.md) |
+| [Profile content](profile-content.md) | What communication and working-style instructions mean, eligible evidence, review preservation and revision validity. |
+| [Portable exports](portable-exports.md) | What leaves the service, how a saved version loads, how existing workspace instructions are preserved, and privacy/compatibility limits. |
 
-The service API owns operation shapes. The package schema owns portable data
-structure. The profile-content contract owns the meaning of the instructions.
-Examples illustrate those commitments; they do not establish another schema or
-mandatory user journey.
+**Example:** A person corrects a working-style instruction after a fresh scenario.
+Profile content determines how rebuilding preserves that decision. Portable
+exports determines what a consumer receives when that saved version is deliberately
+applied. Neither operation establishes that the consumer's behavior is faithful;
+that requires a separate evaluation.
 
-Shared responsibilities, information ownership and self-contained installation
-belong to the [Constellation family agreement](https://github.com/microsoft/amplifier-constellation/blob/main/contracts/family.v1-candidate.md).
-The [interaction agreement](https://github.com/microsoft/amplifier-constellation/blob/main/contracts/experience.v1-candidate.md)
-owns common control and outcome meanings; the
-[SDK agreement](https://github.com/microsoft/amplifier-constellation/blob/main/contracts/protocol-sdk.v1-candidate.md)
-owns the protocol integration policy. Refer to those homes rather than creating
-local variants of their promises.
+## Exact interfaces and checks
+
+- [Package schema](../schemas/twin-profile.schema.json): required data and files.
+- [Service API](ui-api-contract.md): authentication, projects, evidence, builds,
+  application, evaluations and current reference-client view operations.
+- [Configuration](configuration.md): providers and operator settings.
+- [Validation](validation.md) and [verification](verification.md): executable
+  checks and the limits of their quality claims.
+
+Shared [composition](https://github.com/microsoft/amplifier-constellation/blob/main/contracts/composition.md),
+[interaction](https://github.com/microsoft/amplifier-constellation/blob/main/contracts/interaction.md)
+and [engine compatibility](https://github.com/microsoft/amplifier-constellation/blob/main/contracts/engine-compatibility.md)
+promises stay with Constellation. They are not person-specific profile instructions.
+The API owns operation shapes, the package schema owns structure, and the two
+local agreements own content and consumption meaning. This map adds no second
+schema, required screen sequence or universal claim of persona fidelity.

@@ -1,50 +1,30 @@
-# Persona Workshop vision
+# Guidance that helps an agent work like you
 
-People should be able to shape how an agent communicates and approaches work
-using guidance they can inspect and improve. Persona Workshop helps turn selected
-evidence into portable communication and working-style profiles, then test those
-profiles in situations that matter to the people using them.
+Persona Workshop turns selected evidence into communication and working-style
+guidance that people can inspect, correct and use in their agents. The value is
+recognizable, useful guidance grounded in a particular person's behavior—not a
+generic personality label or a convincing guess from thin evidence.
 
-The intended value is specific, useful guidance rather than generic personality
-labels. A profile should help a person recognize a pattern, challenge an inference,
-correct it, and understand why the guidance is there. Thin or contradictory
-evidence should remain visible as uncertainty instead of producing a convincing
-but unsupported portrait.
+A person can select examples, review what they suggest, try the resulting profile
+in a fresh situation and revise it. Communication captures expression and its
+context. Working style captures how the person frames problems, weighs tradeoffs
+and carries work through. Consumers can use either or both.
 
-## Make the contribution reusable
+## Make judgment and reuse practical
 
-Communication and working style are related but distinct. One concerns how
-someone expresses themselves across contexts; the other concerns how they frame
-problems, prioritize, make tradeoffs and carry work through. Keeping these
-contributions separate lets a consumer use the guidance suited to its purpose.
+Sources, uncertainty and revisions should be understandable without reconstructing
+the analysis from raw logs. People bring expertise by challenging interpretations
+and judging examples; agents assist with evidence processing and preparation.
+A saved profile can then be deliberately applied to an existing agent or exported
+to another workspace. It supplies guidance, not identity or permission.
 
-A person can work with the evidence and versions here, then deliberately use a
-profile in an independently owned agent or workspace. The consumer keeps its own
-identity, permissions and execution responsibilities under the
-[family agreement](https://github.com/microsoft/amplifier-constellation/blob/main/contracts/family.v1-candidate.md).
-The profile is guidance within that boundary, not a replacement for it.
+Evidence curation, profile construction, evaluation and export are reusable service
+capabilities. Different experiences can compose them; the current workbench does
+not define the future product UX.
 
-## Support informed judgment
+Judge success separately at three levels: the profile loads correctly, a response
+uses its guidance, and the intended person finds the result faithful and useful.
+A package or review label alone cannot establish all three.
 
-The service should make sources, attribution, revisions and comparisons usable
-without requiring a person to reconstruct an analysis from raw logs. People can
-contribute their expertise by judging examples and changing the guidance; agents
-can assist with evidence processing and preparation within the agreed scope.
-
-Evaluation should distinguish whether a profile loads correctly, whether a
-response follows its guidance, and whether the intended person finds it faithful
-and useful. Automated checks can establish particular boundaries. Human judgment
-and fresh situations are needed to understand quality.
-
-## Leave experiences open
-
-Evidence curation, profile construction, comparison and portable delivery are
-reusable service capabilities. The current workbench is development and
-administration access. Other experiences can compose these operations in ways
-that better fit their users without copying the service's private state or
-assuming its current screen sequence is the future product.
-
-The [contract map](contracts.md) locates the authoritative content, package and
-service interfaces. Develop an idea against the relevant boundary and judge its
-combined result with the consumer; a local export alone does not establish that
-an installed agent used it or behaved well.
+The [local agreement](contracts.md) connects profile meaning to consumer use.
+Shared behavior stays in the [Constellation agreements](https://github.com/microsoft/amplifier-constellation/blob/main/contracts/README.md).
