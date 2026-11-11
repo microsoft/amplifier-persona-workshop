@@ -1,26 +1,16 @@
 # Working on Persona Workshop
 
-Read `docs/VISION.md`, then `docs/contracts.md` to find the relevant content, package or service boundary.
-Use the [Constellation family agreement](https://github.com/microsoft/amplifier-constellation/blob/main/contracts/family.v1-candidate.md)
-for shared responsibilities, information ownership and interface meaning. Use
-[Converge](https://github.com/microsoft/amplifier-converge) as the working method;
-the [family working guide](https://github.com/microsoft/amplifier-constellation/blob/main/docs/working-together.md)
-illustrates it. Read only the boundaries relevant to the next outcome.
+Read `docs/VISION.md` and `docs/contracts.md`, then the exact local interface needed
+for the next outcome. Shared promises live in the [six Constellation agreements](https://github.com/microsoft/amplifier-constellation/blob/main/contracts/README.md);
+link them rather than copying them into local guidance. Use [Converge](https://github.com/microsoft/amplifier-converge)
+for ownership, changes and verification.
 
-- Keep component-specific commitments in their existing local contract home;
-  reference shared promises rather than copying or redefining them here.
-- Derive the next gap from current intent and inspected behavior. Do not maintain
-  a second release/status/gap inventory or require historical transcripts.
-- Treat examples and current admin/reference UI as illustrations, not additional
-  product commitments. If a guide contains a unique obligation, put it in the
-  relevant contract and link it.
-- Make ordinary choices within the assignment. Identify affected owners when a
-  shared promise changes and carry that decision into active work and checks.
-- Verify the relevant boundary and combined outcome; keep fixture, provider,
-  delivery and human-quality claims distinct.
-- Keep credentials, identities, private profiles, transcripts, deployment records
-  and experiment outputs outside the publication checkout.
-- Review changed prose and links. For contract edits, preserve exact interface
-  meaning or make the proposed change explicit and test it with its consumers.
+Keep local agreements focused on this component's contribution. Exact APIs,
+schemas and tests remain authoritative in their technical homes. Current reference
+screens do not define future product UX. Choose work from intent and inspected
+behavior, not a maintained gap or release ledger.
 
-These instructions do not grant installation, release or host-operation authority.
+Preserve interface meaning and check consumers when changing a promise. For docs,
+review complete passages, links and a relevant scenario; prose review is not live
+behavior proof. Keep private identities, credentials, transcripts and deployment
+evidence outside publication. Existing assignment/release permissions still apply.

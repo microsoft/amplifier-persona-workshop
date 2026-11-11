@@ -10,7 +10,7 @@ Read the [vision](docs/VISION.md) for the intended value and the
 [contract map](docs/contracts.md) for the boundaries a contribution may change.
 The workbench is reference access to reusable service capabilities, not a fixed
 future product UX. Shared promises stay in the
-[Constellation family](https://github.com/microsoft/amplifier-constellation/blob/main/contracts/family.v1-candidate.md);
+[Constellation family](https://github.com/microsoft/amplifier-constellation/blob/main/contracts/composition.md);
 [working together](https://github.com/microsoft/amplifier-constellation/blob/main/docs/working-together.md)
 explains the Converge practice used for contributions.
 
