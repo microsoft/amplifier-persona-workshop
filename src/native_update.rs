@@ -23,6 +23,11 @@ fn read(path: &Path) -> Result<Value> {
     );
     Ok(serde_json::from_slice(&std::fs::read(path)?)?)
 }
+// Only mutable JSON snapshots use reader-compatible publication. Worker code,
+// executable files and runtime directories keep their separate strict paths.
+fn write_journal(path: &Path, value: &Value) -> Result<()> {
+    amplifier_native_platform::private_write_data(path, &serde_json::to_vec_pretty(value)?)
+}
 fn allowed(home: &Path) -> Result<()> {
     let c = Config::load(home)?;
     let marker = read(&home.join("native-installation.json"))?;
@@ -314,10 +319,7 @@ fn queue(home: &Path, input: Command) -> Result<Value> {
                 previous["reason"] = json!("interrupted_before_cutover");
                 previous["request_action"] = json!("recover");
                 previous["request_id"] = json!(input.request_id);
-                config::private_write(
-                    &folder.join("plan.json"),
-                    &serde_json::to_vec_pretty(&previous)?,
-                )?;
+                write_journal(&folder.join("plan.json"), &previous)?;
                 config::private_write(&request_file, &serde_json::to_vec(&previous)?)?;
                 let gate = home.join("updates/drain.json");
                 if read(&gate).is_ok_and(|v| v["plan_id"] == id) {
@@ -381,11 +383,8 @@ fn queue(home: &Path, input: Command) -> Result<Value> {
         crate::desktop::copy_runtime(&home.join("runtime"), &folder.join("worker-runtime"))?;
     }
     config::private_write(&folder.join("worker.py"), SCRIPT)?;
-    config::private_write(&folder.join("plan.json"), &serde_json::to_vec_pretty(&job)?)?;
-    config::private_write(
-        &root.join("active.json"),
-        &serde_json::to_vec(&json!({"id":id}))?,
-    )?;
+    write_journal(&folder.join("plan.json"), &job)?;
+    write_journal(&root.join("active.json"), &json!({"id":id}))?;
     config::private_write(&request_file, &serde_json::to_vec(&job)?)?;
     let python = folder.join("worker-runtime/python").join(if cfg!(windows) {
         "python.exe"
@@ -418,7 +417,7 @@ fn queue(home: &Path, input: Command) -> Result<Value> {
             "failed"
         });
         job["reason"] = json!("update_worker_unavailable");
-        config::private_write(&folder.join("plan.json"), &serde_json::to_vec_pretty(&job)?)?;
+        write_journal(&folder.join("plan.json"), &job)?;
     }
     Ok(job)
 }
@@ -536,6 +535,34 @@ mod tests {
         .unwrap();
         (dir, id)
     }
+    #[cfg(windows)]
+    #[test]
+    fn open_status_reader_keeps_its_snapshot_during_phase_publication() {
+        use std::io::Read;
+        use std::os::windows::fs::OpenOptionsExt;
+        let (dir, id) = fixture("draining");
+        let file = dir
+            .path()
+            .join("native-updates")
+            .join(&id)
+            .join("plan.json");
+        let mut reader = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(7)
+            .open(&file)
+            .unwrap();
+        let mut next = active(dir.path()).unwrap().unwrap();
+        next["state"] = json!("verifying");
+        next["unconfirmed_receipt"] = json!({"id":"original", "outcome":null});
+        write_journal(&file, &next).unwrap();
+        assert_eq!(active(dir.path()).unwrap().unwrap(), next);
+        let mut original = Vec::new();
+        reader.read_to_end(&mut original).unwrap();
+        let original: Value = serde_json::from_slice(&original).unwrap();
+        assert_eq!(original["state"], "draining");
+        assert_eq!(original["id"], id);
+    }
+
     #[test]
     fn invalid_existing_journal_preserves_closed_admission() {
         for invalid_marker in [false, true] {
