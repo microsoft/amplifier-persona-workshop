@@ -1,10 +1,18 @@
 #!/usr/bin/env python3
 """Actual disposable workshop stop/swap/restart/rollback; no Persona or model activity."""
-import argparse,hashlib,importlib.util,json,os,shutil,subprocess,tempfile,time,traceback,uuid
+import argparse,contextlib,hashlib,importlib.util,json,os,shutil,subprocess,tempfile,time,traceback,uuid
 from pathlib import Path
 ROOT=Path(__file__).resolve().parents[1]
 for name,path in [('launcher',ROOT/'tests/native_launch.py'),('worker',ROOT/'scripts/native_update.py')]:
  spec=importlib.util.spec_from_file_location(name,path);module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module);globals()[name]=module
+
+@contextlib.contextmanager
+def database(path):
+ import sqlite3
+ db=sqlite3.connect(path)
+ try:
+  with db: yield db
+ finally: db.close()
 
 def run(package,result):
  checks=[]
@@ -26,12 +34,11 @@ def run(package,result):
    assert launcher.request(base,'/auth/first-account',{'setup_token':cap,'password':'Disposable update password','start_at_signin':False})[0]==200
    secret_before=worker.digest(home/'secrets/local-password.json');identity_before=config['id'];private_before=worker.digest(home/'secrets/control-token')
    # A new queued source may arrive during installation. It must never be rewound.
-   import sqlite3
-   with sqlite3.connect(home/'state.sqlite3') as db:db.execute("INSERT INTO audit(at,kind,project_id,data) VALUES(1,'native-fixture',NULL,'{\"value\":1}')")
+   with database(home/'state.sqlite3') as db:db.execute("INSERT INTO audit(at,kind,project_id,data) VALUES(1,'native-fixture',NULL,'{\"value\":1}')")
    expected_value=[1]
    def input_arrived_after_backup():
     expected_value[0]+=1
-    with sqlite3.connect(home/'state.sqlite3') as db:db.execute("UPDATE audit SET data=? WHERE kind='native-fixture'",(json.dumps({'value':expected_value[0]},separators=(',',':')),))
+    with database(home/'state.sqlite3') as db:db.execute("UPDATE audit SET data=? WHERE kind='native-fixture'",(json.dumps({'value':expected_value[0]},separators=(',',':')),))
    original_binary=home/'bin'/binary.name
    for fail in [None,"health","start"]:
     identifier=str(uuid.uuid4());folder=home/'native-updates'/identifier;folder.mkdir(parents=True)
@@ -82,7 +89,7 @@ def run(package,result):
     assert (home/'config.json').read_bytes()==config_bytes
     assert worker.digest(home/'secrets/local-password.json')==secret_before and worker.digest(home/'secrets/control-token')==private_before
     assert current.api('status')['id']==identity_before
-    with sqlite3.connect(home/'state.sqlite3') as db:assert db.execute("SELECT data FROM audit WHERE kind='native-fixture'").fetchone()==(json.dumps({'value':expected_value[0]},separators=(',',':')),)
+    with database(home/'state.sqlite3') as db:assert db.execute("SELECT data FROM audit WHERE kind='native-fixture'").fetchone()==(json.dumps({'value':expected_value[0]},separators=(',',':')),)
     assert not (home/'updates/drain.json').exists()
    checks.append('identity/config/credentials/DB evidence unchanged; no database rewind')
    # A stop failure with the actual server still holding its lock cannot replace anything.
