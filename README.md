@@ -16,7 +16,13 @@ explains the Converge practice used for contributions.
 
 ## Install
 
-Linux with PAM and systemd is supported by this installer. Rust and build dependencies are installed if missing. The UI works in a browser on other operating systems; this installer does not install native Windows/macOS services.
+Native packages target Windows 11 (x64/ARM64), macOS (Intel/Apple silicon), and Linux (x64/ARM64). Extract the complete package and open **Persona Workshop**. It opens in your browser on this computer; choose a workshop password and optionally enable start at sign-in. No Python, Rust, WSL or document-converter installation is needed. The package includes its private document runtime; analysis and recording transcription remain your explicit provider choices. Preview packages are unsigned and not notarized; platform checks do not certify the downloaded-app trust experience.
+
+The app keeps its private data in the current user's application-data folder. Reopening uses the same account, projects and evidence. Local HTTP is loopback-only; remote access and embedding use an explicitly configured HTTPS installation. [Configuration](docs/configuration.md) describes both modes and converter limits.
+
+### Existing Linux installation
+
+The source installer retains PAM, HTTPS and systemd, including existing configuration and state. It installs Rust/build dependencies and system document converters when missing.
 
 ```bash
 git clone https://github.com/microsoft/amplifier-persona-workshop.git
@@ -26,7 +32,7 @@ cd amplifier-persona-workshop
 
 The installer creates an independent private installation, chooses an available port, installs the owner-only PAM login service, starts a user service, and opens the browser when a desktop is available. It always prints the URL. Existing installations retain their data/configuration. Use `--home` for another installation, `--bind 0.0.0.0` for LAN access, `--port` for a fixed port, or `--public-url https://machine.example:port` behind a trusted HTTPS proxy. Certificate trust is required for the generated local HTTPS endpoint; setting a public URL does not provision DNS or a trusted certificate.
 
-Sign in with the installation owner's Linux username/password. TLS is required. For Tailscale Serve, forward a dedicated HTTPS port to the local HTTPS endpoint and use the machine's `*.ts.net` DNS name. Keep existing Serve routes intact; do not enable Funnel for private evidence.
+Sign in with the installation owner's Linux username/password. HTTPS is required for this network-accessible installation. For Tailscale Serve, forward a dedicated HTTPS port to the local HTTPS endpoint and use the machine's `*.ts.net` DNS name. Keep existing Serve routes intact; do not enable Funnel for private evidence.
 
 An analysis endpoint is optional for importing, attribution, manual observations, profile compilation, and export. Automated extraction and scenario generation require one. See [configuration](docs/configuration.md).
 

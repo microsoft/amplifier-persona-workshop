@@ -4,6 +4,13 @@
   const app = document.querySelector("#app"),
     announcer = document.querySelector("#announcer"),
     query = new URLSearchParams(location.search);
+  const setupStorageKey = "persona-workshop-first-account";
+  const setupFragment = new URLSearchParams(location.hash.slice(1));
+  if (setupFragment.has("setup")) {
+    const capability = setupFragment.get("setup");
+    if (/^[a-f0-9]{64}$/.test(capability || "")) sessionStorage.setItem(setupStorageKey, capability);
+    history.replaceState(null, "", location.pathname + location.search);
+  }
   const storageKey = `persona-workshop-view:${new URL(".", location.href).pathname}`;
   // Keep the selected view when upgrading an existing browser installation.
   const previousStorageKey = `twin-workbench-view:${new URL(".", location.href).pathname}`;
@@ -195,7 +202,7 @@
         message = (await r.json()).error || message;
       } catch (_) {}
       if (r.status === 401 && !url.startsWith("auth/")) {
-        S.auth = { authenticated: false, owner: S.auth?.owner };
+        S.auth = { authenticated: false, owner: S.auth?.owner, auth_mode: S.auth?.auth_mode };
         S.private = {};
         S.view = null;
         render();
@@ -476,8 +483,14 @@
       .join("");
   }
   function login() {
-    const opening = S.auth?.authenticated;
-    return `<main id="main" class="login-simple"><div class="login-form"><div class="brand"><span class="mark" aria-hidden="true">pw.</span><strong>Persona Workshop</strong></div>${messages()}${opening ? `<h1>${S.opening ? "Opening…" : "You’re signed in"}</h1><p>${S.opening ? "Loading your workspace." : "The workspace could not open. Try again."}</p>${btn("auth.resume", "Open workspace", "", "", S.opening)}` : `<h1>Sign in</h1><p>Use your account on this machine.</p><form data-form="auth.login">${field("username", "Username", "", { value: S.private.username ?? S.auth?.owner ?? "", private: true, autocomplete: "username", required: true })}${field("password", "Password", "", { private: true, type: "password", autocomplete: "current-password", required: true, value: S.private.password || "" })}<button type="submit" class="button" ${S.busy ? "disabled" : ""}>${S.busy ? "Signing in…" : "Sign in"}</button></form>`}</div></main>`;
+    const opening = S.auth?.authenticated, first = S.auth?.first_account_needed;
+    const setup = sessionStorage.getItem(setupStorageKey);
+    const content = opening
+      ? `<h1>${S.opening ? "Opening…" : "You’re signed in"}</h1><p>${S.opening ? "Loading your workspace." : "The workspace could not open. Try again."}</p>${btn("auth.resume", "Open workspace", "", "", S.opening)}`
+      : first
+        ? `<h1>Set up Persona Workshop</h1>${setup ? `<p>Choose a password for this workshop. Your computer’s password stays separate.</p><form data-form="auth.first-account">${field("password", "New password", "Use at least 12 characters.", {private:true,type:"password",autocomplete:"new-password",required:true,value:S.private.password || ""})}<label class="check"><input type="checkbox" data-private="start_at_signin" ${S.private.start_at_signin ? "checked" : ""}><span>Open in the background when I sign in</span></label><button type="submit" class="button" ${S.busy ? "disabled" : ""}>${S.busy ? "Creating account…" : "Create account"}</button></form>` : '<p>Open the Persona Workshop app on this computer to finish setup.</p>'}`
+        : `<h1>Sign in</h1><p>${S.auth?.auth_mode === "local-password" ? "Use the password you chose for this workshop." : "Use your account on this machine."}</p><form data-form="auth.login">${field("username", "Username", "", { value: S.private.username ?? S.auth?.owner ?? "", private: true, autocomplete: "username", required: true })}${field("password", "Password", "", { private: true, type: "password", autocomplete: "current-password", required: true, value: S.private.password || "" })}<button type="submit" class="button" ${S.busy ? "disabled" : ""}>${S.busy ? "Signing in…" : "Sign in"}</button></form>`;
+    return `<main id="main" class="login-simple"><div class="login-form"><div class="brand"><span class="mark" aria-hidden="true">pw.</span><strong>Persona Workshop</strong></div>${messages()}${content}</div></main>`;
   }
   function projectsScreen() {
     const cards = S.projects
@@ -894,6 +907,7 @@
     };
   const actionNames = [
     "auth.login",
+    "auth.first-account",
     "auth.logout",
     "auth.resume",
     "project.new",
@@ -985,6 +999,30 @@
       return;
     }
     await guarded(async () => {
+      if (action === "auth.first-account") {
+        const password = S.private.password || "";
+        need([...password].length >= 12, "Choose a password with at least 12 characters.");
+        try {
+          await api("auth/first-account", {method:"POST", body:{setup_token:sessionStorage.getItem(setupStorageKey) || "", password, start_at_signin:!!S.private.start_at_signin}});
+        } catch (error) {
+          S.auth = await api("auth/session");
+          if (!S.auth.first_account_needed) {
+            sessionStorage.removeItem(setupStorageKey);
+            S.private.password = "";
+            if (S.auth.authenticated) { await openWorkspace(); return; }
+            throw Error("Your account is ready. Sign in with the password you just chose.");
+          }
+          throw error;
+        }
+        S.private.password = "";
+        sessionStorage.removeItem(setupStorageKey);
+        S.auth = await api("auth/session");
+        need(S.auth.authenticated, "Your account is ready. Sign in to open your workspace.");
+        const startup = await api("api/v1/startup");
+        if (startup.requested && startup.configured !== true) S.notice = "Your account is ready, but starting at sign-in was not enabled. Open the app normally to use it.";
+        await openWorkspace();
+        return;
+      }
       if (action === "auth.login") {
         const username =
             p.username ?? S.private.username ?? S.auth?.owner ?? "",
@@ -1006,7 +1044,7 @@
       }
       if (action === "auth.logout") {
         await api("auth/logout", { method: "POST", body: {} });
-        S.auth = { authenticated: false, owner: S.auth.owner };
+        S.auth = { authenticated: false, owner: S.auth.owner, auth_mode: S.auth.auth_mode };
         S.view = null;
         S.project = null;
         S.private = {};
@@ -1628,7 +1666,7 @@
     const el = event.target;
     if (el.dataset.private) {
       if (el.type !== "file") {
-        S.private[el.dataset.private] = el.value;
+        S.private[el.dataset.private] = el.type === "checkbox" ? el.checked : el.value;
         if (el.dataset.private === "source_text") S.private.source_file = null;
       }
       return;
@@ -2047,6 +2085,7 @@
   (async () => {
     try {
       S.auth = await api("auth/session");
+      if (!S.auth.first_account_needed) sessionStorage.removeItem(setupStorageKey);
       if (S.auth.authenticated) await openWorkspace();
       else render();
     } catch (e) {

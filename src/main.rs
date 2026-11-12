@@ -1,3 +1,4 @@
+#![cfg_attr(windows, windows_subsystem = "windows")]
 use anyhow::{Context, Result, ensure};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use clap::{Parser, Subcommand};
@@ -16,9 +17,11 @@ use std::path::{Path, PathBuf};
 )]
 struct Cli {
     #[arg(long)]
-    home: PathBuf,
+    home: Option<PathBuf>,
+    #[arg(long)]
+    no_browser: bool,
     #[command(subcommand)]
-    action: Action,
+    action: Option<Action>,
 }
 #[derive(Subcommand)]
 enum Action {
@@ -84,10 +87,29 @@ enum ConfigAction {
     },
 }
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() {
     let cli = Cli::parse();
-    let home = cli.home;
-    match cli.action {
+    let show_error = cli.action.is_none() && !cli.no_browser;
+    if let Err(error) = run(cli).await {
+        if show_error {
+            amplifier_native_platform::show_launch_error(
+                &persona_workshop::desktop::APPLICATION,
+                &error.to_string(),
+            );
+        }
+        eprintln!("{error:#}");
+        std::process::exit(1);
+    }
+}
+async fn run(cli: Cli) -> Result<()> {
+    let home = match cli.home {
+        Some(home) => home,
+        None => persona_workshop::desktop::default_home()?,
+    };
+    let Some(action) = cli.action else {
+        return persona_workshop::desktop::launch(home, !cli.no_browser).await;
+    };
+    match action {
         Action::Init {
             owner,
             bind,
@@ -114,6 +136,10 @@ async fn main() -> Result<()> {
                 port,
                 public_url,
                 pam_service: "persona-workshop".into(),
+                auth_mode: Default::default(),
+                web_transport: Default::default(),
+                document_python: None,
+                pdf_backend: Default::default(),
                 tls_cert,
                 tls_key,
                 tls_ca,
@@ -286,6 +312,15 @@ async fn api(home: &Path, method: &str, path: &str, body: Option<Value>) -> Resu
         path.starts_with("/api/v1/") && !path.contains(['\r', '\n']),
         "Use a local /api/v1/ path"
     );
+    if Config::load(home)?.web_transport == config::WebTransport::LocalHttp {
+        return persona_workshop::desktop::local_api(
+            home,
+            method,
+            path.trim_start_matches("/api/v1/"),
+            body,
+        )
+        .await;
+    }
     let c = Config::load(home)?;
     let runtime: Value = serde_json::from_slice(&std::fs::read(home.join("runtime.json"))?)?;
     let mut client = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none());
@@ -343,7 +378,7 @@ fn generate_tls(home: &Path) -> Result<(PathBuf, PathBuf, Option<PathBuf>)> {
         "127.0.0.1".to_owned(),
         "::1".to_owned(),
     ];
-    if let Ok(addresses) = get_if_addrs::get_if_addrs() {
+    if let Ok(addresses) = if_addrs::get_if_addrs() {
         for a in addresses {
             let ip = a.ip().to_string();
             if !names.contains(&ip) {

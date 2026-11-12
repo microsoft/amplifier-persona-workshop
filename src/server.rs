@@ -72,9 +72,15 @@ pub fn router(state: Arc<AppState>) -> Router {
             get(|| async { Json(json!({"ok":true,"version":env!("CARGO_PKG_VERSION")})) }),
         )
         .route("/auth/login", post(auth::login))
+        .route("/auth/first-account", post(auth::first_account))
         .route("/auth/session", get(auth::session))
         .route("/auth/logout", post(auth::logout))
         .route("/api/v1/descriptor", get(descriptor))
+        .route("/api/v1/local-proof", get(auth::local_proof))
+        .route(
+            "/api/v1/startup",
+            get(crate::desktop::startup_get).post(crate::desktop::startup_set),
+        )
         .route("/api/v1/status", get(status))
         .route("/api/v1/tokens", get(tokens).post(create_token))
         .route("/api/v1/tokens/{id}", axum::routing::delete(revoke_token))
@@ -168,6 +174,20 @@ async fn headers(
         && let Ok(v) = a.parse()
     {
         request.headers_mut().insert(header::HOST, v);
+    }
+    if state.config.web_transport == crate::config::WebTransport::LocalHttp {
+        let headers = request.headers();
+        let expected = state.config.public_url.trim_start_matches("http://");
+        if headers.get(header::HOST).and_then(|v| v.to_str().ok()) != Some(expected)
+            || headers
+                .get(header::ORIGIN)
+                .is_some_and(|v| v.to_str().ok() != Some(state.config.public_url.as_str()))
+            || headers
+                .get("sec-fetch-site")
+                .is_some_and(|v| v != "same-origin" && v != "none")
+        {
+            return ApiError::forbidden().into_response();
+        }
     }
     let mut r = next.run(request).await;
     let h = r.headers_mut();
@@ -748,6 +768,13 @@ async fn view_ack(
 }
 
 pub async fn serve(home: std::path::PathBuf) -> anyhow::Result<()> {
+    serve_with_browser(home, false, None).await
+}
+pub async fn serve_with_browser(
+    home: std::path::PathBuf,
+    open_browser: bool,
+    listener: Option<std::net::TcpListener>,
+) -> anyhow::Result<()> {
     use fs2::FileExt;
     let lock = std::fs::OpenOptions::new()
         .read(true)
@@ -757,24 +784,41 @@ pub async fn serve(home: std::path::PathBuf) -> anyhow::Result<()> {
         .open(home.join("service.lock"))?;
     lock.try_lock_exclusive()
         .map_err(|_| anyhow::anyhow!("This workbench is already running"))?;
-    let s = AppState::open(home)?;
-    let listener = std::net::TcpListener::bind((s.config.bind.as_str(), s.config.port))?;
+    amplifier_native_platform::protect_file(&home.join("service.lock"))?;
+    let c = crate::config::Config::load(&home)?;
+    let listener = match listener {
+        Some(listener) => listener,
+        None => std::net::TcpListener::bind((c.bind.as_str(), c.port))?,
+    };
     listener.set_nonblocking(true)?;
     let port = listener.local_addr()?.port();
+    let s = AppState::open(home)?;
+    let local = s.config.web_transport == crate::config::WebTransport::LocalHttp;
+    let scheme = if local { "http" } else { "https" };
     let _ = rustls::crypto::ring::default_provider().install_default();
-    let tls =
-        axum_server::tls_rustls::RustlsConfig::from_pem_file(&s.config.tls_cert, &s.config.tls_key)
-            .await?;
     crate::config::private_write(
         &s.home.join("runtime.json"),
         &serde_json::to_vec_pretty(
-            &json!({"id":s.config.id,"port":port,"url":format!("https://127.0.0.1:{port}"),"public_url":s.config.public_url,"version":env!("CARGO_PKG_VERSION"),"started_at":now_ms()}),
+            &json!({"id":s.config.id,"port":port,"url":format!("{scheme}://127.0.0.1:{port}"),"public_url":s.config.public_url,"version":env!("CARGO_PKG_VERSION"),"started_at":now_ms()}),
         )?,
     )?;
-    println!("Persona Workshop is listening on HTTPS port {port}");
+    println!("Persona Workshop is listening on {scheme} port {port}");
     if !s.config.public_url.is_empty() {
         println!("Open {}", s.config.public_url);
     }
+    if open_browser {
+        crate::desktop::ready(&s.home, &s.config, true)?;
+    }
+    if local {
+        if !open_browser {
+            crate::desktop::ready(&s.home, &s.config, false)?;
+        }
+        axum::serve(tokio::net::TcpListener::from_std(listener)?, router(s)).await?;
+        return Ok(());
+    }
+    let tls =
+        axum_server::tls_rustls::RustlsConfig::from_pem_file(&s.config.tls_cert, &s.config.tls_key)
+            .await?;
     axum_server::from_tcp_rustls(listener, tls)?
         .serve(router(s).into_make_service())
         .await?;

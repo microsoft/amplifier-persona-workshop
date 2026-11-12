@@ -2,6 +2,7 @@ pub mod agents;
 pub mod auth;
 pub mod calibration;
 pub mod config;
+pub mod desktop;
 pub mod error;
 pub mod evidence;
 pub mod imports;
@@ -13,3 +14,6 @@ pub mod server;
 pub mod state;
 pub mod views;
 pub mod worker;
+
+#[cfg(windows)]
+mod process_tree;
