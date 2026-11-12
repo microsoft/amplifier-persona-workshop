@@ -24,25 +24,32 @@ class ActualWorker:
   if os.name!='nt':return
   import ctypes as c
   from ctypes import wintypes as w
-  script=self.folder/'fixture-query.ps1';output=self.folder/'fixture-worker.json'
-  script.write_text("""$ErrorActionPreference='Stop'
-$p=@(Get-CimInstance Win32_Process | Where-Object {$_.ExecutablePath -eq $env:PERSONA_FIXTURE_EXE -and $_.CommandLine.Contains($env:PERSONA_FIXTURE_PLAN)})
-if($p.Count -ne 1){throw 'Expected one exact plan interpreter'}
-[IO.File]::WriteAllText($env:PERSONA_FIXTURE_OUTPUT,(@{pid=$p[0].ProcessId}|ConvertTo-Json -Compress),[Text.UTF8Encoding]::new($false))
-""",encoding='utf-8')
-  env=dict(os.environ,PERSONA_FIXTURE_EXE=str(self.executable),PERSONA_FIXTURE_PLAN=self.identifier,PERSONA_FIXTURE_OUTPUT=str(output))
-  powershell=Path(os.environ['SystemRoot'])/'System32/WindowsPowerShell/v1.0/powershell.exe'
-  subprocess.run([str(powershell),'-NoProfile','-NonInteractive','-File',str(script)],env=env,check=True,capture_output=True,text=True,timeout=20)
-  self.pid=json.loads(output.read_text(encoding='utf-8'))['pid']
   self.kernel=c.WinDLL('kernel32',use_last_error=True)
   self.kernel.OpenProcess.argtypes=[w.DWORD,w.BOOL,w.DWORD];self.kernel.OpenProcess.restype=w.HANDLE
   self.kernel.QueryFullProcessImageNameW.argtypes=[w.HANDLE,w.DWORD,w.LPWSTR,c.POINTER(w.DWORD)]
   self.kernel.WaitForSingleObject.argtypes=[w.HANDLE,w.DWORD];self.kernel.CloseHandle.argtypes=[w.HANDLE]
-  self.handle=self.kernel.OpenProcess(0x100000|0x1000,False,self.pid)
-  assert self.handle,'Exact worker process unavailable'
-  buf=c.create_unicode_buffer(32768);size=w.DWORD(32768)
-  assert self.kernel.QueryFullProcessImageNameW(self.handle,0,buf,c.byref(size))
-  assert os.path.normcase(buf.value.removeprefix('\\\\?\\'))==os.path.normcase(str(self.executable))
+  # Inspect executable identities directly; console/CIM text may normalize the
+  # runner's short Unicode temp path differently from the process image path.
+  psapi=c.WinDLL('psapi',use_last_error=True)
+  psapi.EnumProcesses.argtypes=[c.POINTER(w.DWORD),w.DWORD,c.POINTER(w.DWORD)]
+  ids=(w.DWORD*8192)();used=w.DWORD()
+  assert psapi.EnumProcesses(ids,c.sizeof(ids),c.byref(used))
+  assert used.value<c.sizeof(ids),'Process enumeration exceeded fixture bound'
+  expected=os.path.normcase(str(self.executable.resolve()))
+  for pid in ids[:used.value//c.sizeof(w.DWORD)]:
+   handle=self.kernel.OpenProcess(0x100000|0x1000,False,pid)
+   if not handle:continue
+   buf=c.create_unicode_buffer(32768);size=w.DWORD(32768)
+   matches=False
+   try:
+    if self.kernel.QueryFullProcessImageNameW(handle,0,buf,c.byref(size)):
+     matches=os.path.normcase(str(Path(buf.value).resolve()))==expected
+    if matches:
+     assert self.handle is None,'Multiple processes use this exact plan interpreter'
+     self.handle=handle;self.pid=pid
+   finally:
+    if not matches:self.kernel.CloseHandle(handle)
+  assert self.handle,'Exact per-plan interpreter was not observed'
  def wait(self,deadline):
   if self.settled:return
   if self.handle:

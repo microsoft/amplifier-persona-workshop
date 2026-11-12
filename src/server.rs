@@ -801,6 +801,11 @@ pub async fn serve_with_browser(
     lock.try_lock_exclusive()
         .map_err(|_| anyhow::anyhow!("This workbench is already running"))?;
     amplifier_native_platform::protect_file(&home.join("service.lock"))?;
+    // The exact replacement intent is checked under the service lock, before
+    // AppState can touch retained jobs or the listener can become available.
+    // Ordinary app opening keeps recovery management available; admission blocks
+    // new work while the update journal is unresolved.
+    crate::native_update::validate_launch(&home)?;
     let c = crate::config::Config::load(&home)?;
     let listener = match listener {
         Some(listener) => listener,
