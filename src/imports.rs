@@ -227,7 +227,14 @@ pub async fn upload(
                 .as_ref()
                 .map(|p| p.to_string_lossy().into_owned())
                 .unwrap_or_else(|| "python3".into()),
-            args: vec!["-I".into(), "-B".into(), "-c".into(), CONVERTER.into()],
+            args: vec![
+                "-I".into(),
+                "-B".into(),
+                "-X".into(),
+                "utf8".into(),
+                "-c".into(),
+                CONVERTER.into(),
+            ],
             env: Default::default(),
             cwd: s.home.to_string_lossy().into(),
             timeout_seconds: 35,

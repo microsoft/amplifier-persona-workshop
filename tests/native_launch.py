@@ -37,25 +37,25 @@ def run(package,result,browser=False):
     with tempfile.TemporaryDirectory(prefix='Persona native space ') as temporary:
         root=Path(temporary);bundle=root/'download';bundle.mkdir();extract(package,bundle)
         binary=next(p for p in bundle.rglob('persona-workshop.exe' if os.name=='nt' else 'persona-workshop') if p.is_file())
-        binary.chmod(0o755);home=root/'private connection';env={k:v for k,v in os.environ.items() if not k.upper().startswith(('SLACK_','OPENAI_','ANTHROPIC_','AZURE_','GOOGLE_','AMPLIFIER_'))};env['PATH']=str(root/'no-tools');env['PYTHONDONTWRITEBYTECODE']='1'
+        binary.chmod(0o755);home=root/'private connection café 雪';env={k:v for k,v in os.environ.items() if not k.upper().startswith(('SLACK_','OPENAI_','ANTHROPIC_','AZURE_','GOOGLE_','AMPLIFIER_'))};env['PATH']=str(root/'no-tools');env['PYTHONDONTWRITEBYTECODE']='1'
         def start():
             log=open(root/'server.log','ab');p=subprocess.Popen([str(binary),'--home',str(home),'--no-browser'],env=env,stdin=subprocess.DEVNULL,stdout=log,stderr=log)
             for _ in range(400):
-                if p.poll() is not None:raise AssertionError('Native app exited during startup: '+(root/'server.log').read_text(errors='replace')[-1000:])
+                if p.poll() is not None:raise AssertionError('Native app exited during startup: '+(root/'server.log').read_text(encoding='utf-8',errors='replace')[-1000:])
                 try:
-                    endpoint=json.loads((home/'runtime.json').read_text());base=endpoint['url'];status,_,_=request(base,'/auth/session')
+                    endpoint=json.loads((home/'runtime.json').read_text(encoding='utf-8'));base=endpoint['url'];status,_,_=request(base,'/auth/session')
                     if status==200:return p,base,log
                 except (OSError,ValueError):pass
                 time.sleep(.1)
             p.terminate();p.wait();log.close();raise AssertionError('Native app did not become ready')
         p,base,log=start()
         try:
-            config=json.loads((home/'config.json').read_text());assert config['auth_mode']=='local-password' and config['web_transport']=='local-http'
+            config=json.loads((home/'config.json').read_text(encoding='utf-8'));assert config['auth_mode']=='local-password' and config['web_transport']=='local-http'
             assert config['extractor'] is None and config['transcription'] is None and config['pdf_backend']=='pypdf';checks.append('fresh native no-agent installation')
             status,_,session=request(base,'/auth/session');assert status==200 and session['first_account_needed']
             status,_,_=request(base,'/api/v1/projects');assert status==401
             status,_,_=request(base,'/auth/session',headers={'Host':'evil.test','Origin':'http://evil.test'});assert status==403;checks.append('unauthenticated and cross-origin refused')
-            cap=json.loads((home/'secrets/first-account.json').read_text())['token'];password='Disposable native password 29'
+            cap=json.loads((home/'secrets/first-account.json').read_text(encoding='utf-8'))['token'];password='Disposable native password 29'
             if browser:
                 fixture=root/'browser-input.json';fixture.write_text(json.dumps({'base':base,'cap':cap,'password':password}))
                 subprocess.run([shutil.which('node'),str(Path(__file__).with_name('native-browser.mjs')),str(fixture)],check=True,timeout=90)
@@ -68,16 +68,16 @@ def run(package,result,browser=False):
             reopened=subprocess.run([str(binary),'--home',str(home),'--no-browser'],env=env,capture_output=True,text=True,timeout=20);assert reopened.returncode==0,reopened.stderr;assert (home/'config.json').read_bytes()==config_bytes;checks.append('second open verifies existing identity without replacement')
             status_run=subprocess.run([str(binary),'--home',str(home),'api','GET','/api/v1/status'],env=env,capture_output=True,text=True,timeout=20);assert status_run.returncode==0,status_run.stderr;assert json.loads(status_run.stdout)['id']==config['id'];checks.append('same-connection listener proof before CLI authorization')
             private_python=home/'runtime/python'/('python.exe' if os.name=='nt' else 'bin/python3')
-            py=subprocess.run([str(private_python),'-I','-B','-c','import ssl,sqlite3,json; print(json.dumps({"isolated":__import__("sys").flags.isolated,"ssl":bool(ssl.OPENSSL_VERSION)}))'],env=env,capture_output=True,text=True,timeout=20);assert py.returncode==0,py.stderr;assert json.loads(py.stdout)=={'isolated':1,'ssl':True};checks.append('private Python starts without system tools')
+            py=subprocess.run([str(private_python),'-I','-B','-X','utf8','-c','import ssl,sqlite3,json; print(json.dumps({"isolated":__import__("sys").flags.isolated,"ssl":bool(ssl.OPENSSL_VERSION)}))'],env=env,capture_output=True,text=True,timeout=20);assert py.returncode==0,py.stderr;assert json.loads(py.stdout)=={'isolated':1,'ssl':True};checks.append('private Python starts without system tools')
             cookie=headers['set-cookie'].split(';',1)[0]
-            token=(home/'secrets/control-token').read_text().strip();authorization={'Authorization':'Bearer '+token}
+            token=(home/'secrets/control-token').read_text(encoding='utf-8').strip();authorization={'Authorization':'Bearer '+token}
             status,_,created=request(base,'/api/v1/projects',{'alias':'Synthetic subject','aliases':['Avery'],'subject_type':'fictional'},authorization);assert status==200,(status,created)
             project=created['project'] if 'project' in created else created
             # Real document conversion is invoked by the actual saved installation, with no PATH tools.
             import base64,io
             word=io.BytesIO()
             with zipfile.ZipFile(word,'w') as out:out.writestr('word/document.xml','<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Keep this author statement.</w:t></w:r></w:p></w:body></w:document>')
-            pdf_bytes=subprocess.check_output([str(private_python),'-I','-B','-c','import runpy,base64,sys; m=runpy.run_path(sys.argv[1]); print(base64.b64encode(m["text_pdf"]()).decode())',str(Path(__file__).with_name('test_native_pdf.py'))],env=env,text=True,timeout=20)
+            pdf_bytes=subprocess.check_output([str(private_python),'-I','-B','-X','utf8','-c','import runpy,base64,sys; m=runpy.run_path(sys.argv[1]); print(base64.b64encode(m["text_pdf"]()).decode())',str(Path(__file__).with_name('test_native_pdf.py'))],env=env,text=True,timeout=20)
             files=[('readable.pdf',base64.b64decode(pdf_bytes)),('note.html',b'<p>Keep this separate HTML statement.</p><script>hidden</script>'),('note.docx',word.getvalue())]
             for name,data in files:
                 status,_,current=request(base,'/api/v1/projects/'+project['id'],headers=authorization);assert status==200
@@ -85,7 +85,7 @@ def run(package,result,browser=False):
                 status,_,value=request(base,'/api/v1/projects/'+project['id']+'/file-import',{'expected_revision':current['revision'],'filename':name,'content_base64':base64.b64encode(data).decode(),'authors':['Avery']},authorization)
                 assert status==200,(name,status,value)
             checks.append('actual PDF/HTML/DOCX imports use private Python with no system interpreter')
-            pdfcheck=subprocess.run([str(private_python),'-I','-B',str(Path(__file__).with_name('test_native_pdf.py'))],env=env,capture_output=True,text=True,timeout=35);assert pdfcheck.returncode==0,pdfcheck.stdout+pdfcheck.stderr;checks.append('bundled PDF reader: text, attribution, encrypted/scanned refusal and expansion bound')
+            pdfcheck=subprocess.run([str(private_python),'-I','-B','-X','utf8',str(Path(__file__).with_name('test_native_pdf.py'))],env=env,capture_output=True,text=True,timeout=35);assert pdfcheck.returncode==0,pdfcheck.stdout+pdfcheck.stderr;checks.append('bundled PDF reader: text, attribution, encrypted/scanned refusal and expansion bound')
             status,_,capabilities=request(base,'/api/v1/import-capabilities',headers=authorization);assert status==200 and capabilities['pdf_backend']=='pypdf' and capabilities['transcription_ready'] is False
             project_id=project['id'];status,_,saved=request(base,'/api/v1/projects/'+project_id,headers=authorization);assert status==200
 
