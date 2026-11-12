@@ -6,6 +6,30 @@ ROOT=Path(__file__).resolve().parents[1]
 for name,path in [('launcher',ROOT/'tests/native_launch.py'),('worker',ROOT/'scripts/native_update.py')]:
  spec=importlib.util.spec_from_file_location(name,path);module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module);globals()[name]=module
 
+def public_failure_evidence(details):
+ """Hash launch binding nonces consistently; keep original private files intact."""
+ nonces=set()
+ def collect(value):
+  if isinstance(value,dict):
+   for key,item in value.items():
+    if key=='nonce' and isinstance(item,str):nonces.add(item)
+    collect(item)
+  elif isinstance(value,list):
+   for item in value:collect(item)
+ collect(details)
+ for name in [*details.get('native_receipts',{}),*details.get('claim_files',[])]:
+  for prefix in ['manager-stop-','manager-claim-']:
+   if name.startswith(prefix) and name.endswith('.json'):nonces.add(name[len(prefix):-5])
+ replacements={value:'sha256:'+hashlib.sha256(value.encode()).hexdigest() for value in nonces if value}
+ def redact(value):
+  if isinstance(value,str):
+   for old,new in replacements.items():value=value.replace(old,new)
+   return value
+  if isinstance(value,list):return [redact(item) for item in value]
+  if isinstance(value,dict):return {redact(key):redact(item) for key,item in value.items()}
+  return value
+ return redact(details)
+
 @contextlib.contextmanager
 def database(path):
  import sqlite3
@@ -204,6 +228,23 @@ def run(package,result,managed=False):
    identifier=str(uuid.uuid4());folder=home/'native-updates'/identifier;folder.mkdir(mode=0o700);shutil.copytree(bundle,folder/'candidate');job.update(id=identifier,state='ready',installed_sha256=worker.digest(original_binary),config_sha256=worker.digest(home/'config.json'));worker.write(folder/'plan.json',job);worker.write(home/'native-updates/active.json',{'id':identifier});prepare_direct(identifier,job);current=worker.Worker(home,identifier)
    before=worker.digest(original_binary);current.stop=lambda:(_ for _ in ()).throw(RuntimeError('injected unknown stop'))
    current.execute();assert worker.read(folder/'plan.json')['state']=='recovery_required';assert worker.digest(original_binary)==before;assert current.api('status')['id']==identity_before;checks.append('unknown stop never replaces a running service or rewinds state')
+  except BaseException as error:
+   # Preserve the native outcome before cleanup can itself fail. These fixed
+   # manager receipts contain invocation/profile evidence, never credentials.
+   details={'error_type':type(error).__name__,'error':str(error),'native_receipts':{}}
+   if current is not None:
+    folder=home/'native-updates'/current.id
+    paths=[folder/'plan.json',folder/'manager-launch.json',*sorted(folder.glob('manager-stop-*.json'))[-4:]]
+    for path in paths:
+     try:
+      if path.is_file() and not path.is_symlink() and path.stat().st_size<=65536:details['native_receipts'][path.name]=worker.read(path)
+     except (OSError,ValueError) as inspect_error:details['native_receipts'][path.name]={'inspection_error':str(inspect_error)}
+    details['claim_files']=[p.name for p in folder.glob('manager-claim-*.json')]
+   details=public_failure_evidence(details)
+   details['error']=details['error'][:4096]
+   if result:result.with_suffix('.failure.json').write_text(json.dumps(details,indent=2)+'\n')
+   print('Native update failure evidence: '+json.dumps(details),flush=True)
+   raise RuntimeError('Native update fixture failed; see sanitized failure evidence') from None
   finally:
    if actual_worker is not None:actual_worker.wait(worker_deadline)
    if current:
