@@ -8,7 +8,10 @@ use tokio::process::{Child, Command};
 struct Peer {
     child: Child,
     connection: amplifier_acp_connection::Connection,
+    #[cfg(unix)]
     pid: u32,
+    #[cfg(windows)]
+    _job: crate::process_tree::ProcessJob,
 }
 impl Drop for Peer {
     fn drop(&mut self) {
@@ -41,6 +44,9 @@ impl Peer {
             "SSL_CERT_DIR",
             "SYSTEMROOT",
             "WINDIR",
+            "USERPROFILE",
+            "TEMP",
+            "TMP",
         ] {
             if let Ok(v) = std::env::var(k) {
                 cmd.env(k, v);
@@ -49,10 +55,15 @@ impl Peer {
         cmd.envs(&c.env);
         #[cfg(unix)]
         cmd.process_group(0);
+        #[cfg(windows)]
+        cmd.creation_flags(windows_sys::Win32::System::Threading::CREATE_SUSPENDED);
         let mut child = cmd
             .spawn()
             .context("Could not start the configured ACP extractor")?;
+        #[cfg(unix)]
         let pid = child.id().unwrap_or(0);
+        #[cfg(windows)]
+        let job = crate::process_tree::ProcessJob::attach_suspended(&mut child).await?;
         let input = child.stdin.take().context("Missing ACP input")?;
         let output = child.stdout.take().context("Missing ACP output")?;
         let connection =
@@ -60,7 +71,10 @@ impl Peer {
         Ok(Self {
             child,
             connection,
+            #[cfg(unix)]
             pid,
+            #[cfg(windows)]
+            _job: job,
         })
     }
     async fn write(&mut self, v: Value) -> Result<()> {

@@ -63,6 +63,32 @@ def zip_text(data, member, paragraph, text_tag):
         return "\n\n".join(chunks)
 
 
+def pypdf_text(data):
+    # Native packages use the pinned pure-Python reader. It is not a Poppler
+    # compatibility promise: layout and font extraction require human review.
+    from pypdf import PdfReader, apply_configuration
+    with apply_configuration(maximum_declared_stream_length=16*LIMIT,
+            array_based_stream_maximum_output_length=16*LIMIT,
+            zlib_maximum_output_length=16*LIMIT, lzw_maximum_output_length=16*LIMIT,
+            run_length_maximum_output_length=16*LIMIT, stream_decoding_work_maximum_length=32*LIMIT,
+            page_tree_maximum_entries=2000, page_tree_maximum_depth=40,
+            stream_parsing_work_maximum_count=500_000, xform_maximum_invocations_per_extraction=500,
+            jbig2dec_binary=None):
+        reader = PdfReader(io.BytesIO(data), strict=True)
+        if reader.is_encrypted:
+            raise ValueError("Encrypted PDFs are not supported; export a readable copy first")
+        if len(reader.pages) > 1000:
+            raise ValueError("Split this PDF into smaller documents")
+        chunks, size = [], 0
+        for page in reader.pages:
+            text = page.extract_text(extraction_mode="layout")
+            size += len(text.encode())
+            if size > LIMIT:
+                raise ValueError("Extracted PDF text exceeds 2 MB")
+            chunks.append(text)
+        return "\n\n".join(chunks)
+
+
 def convert(req):
     data = base64.b64decode(req["content_base64"], validate=True)
     ext = pathlib.Path(req["filename"]).suffix.lower()
@@ -87,13 +113,18 @@ def convert(req):
         text = zip_text(data, "content.xml", {"{urn:oasis:names:tc:opendocument:xmlns:text:1.0}p", "{urn:oasis:names:tc:opendocument:xmlns:text:1.0}h"}, None)
         kind = "document"
     elif ext == ".pdf":
-        with tempfile.TemporaryDirectory(prefix="persona-pdf-") as folder:
-            source, target = pathlib.Path(folder) / "input.pdf", pathlib.Path(folder) / "output.txt"
-            source.write_bytes(data)
-            subprocess.run(["pdftotext", "-layout", "-enc", "UTF-8", str(source), str(target)], check=True, timeout=25, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            if target.stat().st_size > LIMIT:
-                raise ValueError("Extracted PDF text exceeds 2 MB")
-            text = target.read_text()
+        if req.get("pdf_backend", "pdftotext") == "pypdf":
+            text = pypdf_text(data)
+        elif req.get("pdf_backend", "pdftotext") == "pdftotext":
+            with tempfile.TemporaryDirectory(prefix="persona-pdf-") as folder:
+                source, target = pathlib.Path(folder) / "input.pdf", pathlib.Path(folder) / "output.txt"
+                source.write_bytes(data)
+                subprocess.run(["pdftotext", "-layout", "-enc", "UTF-8", str(source), str(target)], check=True, timeout=25, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                if target.stat().st_size > LIMIT:
+                    raise ValueError("Extracted PDF text exceeds 2 MB")
+                text = target.read_text()
+        else:
+            raise ValueError("Unsupported configured PDF backend")
         kind = "document"
     else:
         raise ValueError("Unsupported document format")
@@ -121,5 +152,5 @@ if __name__ == "__main__":
             raise ValueError("Normalized output is too large")
         print(output)
     except Exception:
-        print(json.dumps({"error": "Document could not be converted. Check its format, size, and local converter availability. PDF files need readable text and pdftotext."}))
+        print(json.dumps({"error": "Document could not be converted. Check its format, size, and local converter availability. PDF files need readable text; encrypted or scanned PDFs are not supported by the bundled reader."}))
         sys.exit(1)

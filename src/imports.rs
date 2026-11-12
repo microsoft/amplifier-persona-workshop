@@ -20,7 +20,9 @@ use tokio::{
 
 const MAX_FILE: usize = 20 * 1024 * 1024;
 const CONVERTER: &str = include_str!("../scripts/import-document.py");
+#[cfg(unix)]
 struct ProcessGroup(u32);
+#[cfg(unix)]
 impl Drop for ProcessGroup {
     fn drop(&mut self) {
         #[cfg(unix)]
@@ -34,7 +36,7 @@ impl Drop for ProcessGroup {
 pub async fn capabilities(State(s): State<Arc<AppState>>, h: HeaderMap) -> ApiResult<Json<Value>> {
     auth::check(&s, &h, "observe", false)?;
     Ok(Json(
-        json!({"formats":["txt","md","json","eml","html","docx","odt","pdf","transcript.json"],"recording_formats":["wav","mp3","m4a","ogg","webm","mp4"],"max_file_bytes":MAX_FILE,"transcription_ready":s.config.transcription.is_some(),"speaker_identification":"Explicit speaker selection is required; diarization labels are not identities","pdf_requires":"pdftotext; scanned PDFs need OCR before import"}),
+        json!({"formats":["txt","md","json","eml","html","docx","odt","pdf","transcript.json"],"recording_formats":["wav","mp3","m4a","ogg","webm","mp4"],"max_file_bytes":MAX_FILE,"transcription_ready":s.config.transcription.is_some(),"speaker_identification":"Explicit speaker selection is required; diarization labels are not identities","pdf_backend":s.config.pdf_backend.as_str(),"document_python":if s.config.document_python.is_some(){"installation-private"}else{"system"},"pdf_requires":if s.config.pdf_backend==config::PdfBackend::Pypdf{"Bundled readable-text extraction; encrypted and scanned PDFs are unsupported; review layout after import"}else{"pdftotext; scanned PDFs need OCR before import"}}),
     ))
 }
 async fn command(c: &Extractor, input: Value) -> ApiResult<Value> {
@@ -55,6 +57,9 @@ async fn command(c: &Extractor, input: Value) -> ApiResult<Value> {
         "SSL_CERT_DIR",
         "SYSTEMROOT",
         "WINDIR",
+        "USERPROFILE",
+        "TEMP",
+        "TMP",
     ] {
         if let Ok(v) = std::env::var(key) {
             cmd.env(key, v);
@@ -63,10 +68,15 @@ async fn command(c: &Extractor, input: Value) -> ApiResult<Value> {
     cmd.envs(&c.env);
     #[cfg(unix)]
     cmd.process_group(0);
+    #[cfg(windows)]
+    cmd.creation_flags(windows_sys::Win32::System::Threading::CREATE_SUSPENDED);
     let mut child = cmd.spawn().map_err(|_| {
         ApiError::bad("The configured import or transcription command is unavailable")
     })?;
+    #[cfg(unix)]
     let _group = ProcessGroup(child.id().unwrap_or(0));
+    #[cfg(windows)]
+    let _job = crate::process_tree::ProcessJob::attach_suspended(&mut child).await?;
     let mut stdin = child.stdin.take().unwrap();
     let mut stdout = child.stdout.take().unwrap().take(3 * 1024 * 1024 + 1);
     let work = async {
@@ -213,13 +223,25 @@ pub async fn upload(
         )
     } else if ["eml", "html", "htm", "docx", "odt", "pdf"].contains(&ext.as_str()) {
         let c = Extractor {
-            command: "python3".into(),
-            args: vec!["-c".into(), CONVERTER.into()],
+            command: s
+                .config
+                .document_python
+                .as_ref()
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "python3".into()),
+            args: vec![
+                "-I".into(),
+                "-B".into(),
+                "-X".into(),
+                "utf8".into(),
+                "-c".into(),
+                CONVERTER.into(),
+            ],
             env: Default::default(),
             cwd: s.home.to_string_lossy().into(),
             timeout_seconds: 35,
         };
-        let result=command(&c,json!({"filename":filename,"content_base64":encoded,"author":if authors.len()==1{authors[0].as_str()}else{"Unattributed"}})).await?;
+        let result=command(&c,json!({"filename":filename,"content_base64":encoded,"pdf_backend":s.config.pdf_backend.as_str(),"author":if authors.len()==1{authors[0].as_str()}else{"Unattributed"}})).await?;
         (
             result["kind"].as_str().unwrap_or("document").to_owned(),
             json!({"messages":result["messages"]}).to_string(),

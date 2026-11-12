@@ -1,28 +1,95 @@
-name: Check Persona Workshop
-on: [push, pull_request, workflow_dispatch]
+name: Check and package Persona Workshop
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
 permissions:
   contents: read
 jobs:
-  check:
-    runs-on: ubuntu-24.04
+  native:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            executable: persona-workshop
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            executable: persona-workshop
+          - runner: macos-15
+            target: aarch64-apple-darwin
+            executable: persona-workshop
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+            executable: persona-workshop
+          - runner: windows-2025
+            target: x86_64-pc-windows-msvc
+            executable: persona-workshop.exe
+          - runner: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            executable: persona-workshop.exe
+    runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      CARGO_BUILD_TARGET: ${{ matrix.target }}
     steps:
       - uses: actions/checkout@v4
-      - run: sudo apt-get update && sudo apt-get install -y libpam0g-dev libclang-dev pkg-config poppler-utils
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v7
         with:
-          components: rustfmt, clippy
+          python-version: '3.13'
+      - name: Linux build prerequisites
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libpam0g-dev libclang-dev pkg-config poppler-utils
+      - name: Native toolchain and test interpreter
+        run: |
+          rustup toolchain install 1.93.0 --profile minimal --component rustfmt --component clippy
+          rustup +1.93.0 target add "$CARGO_BUILD_TARGET"
+          python -c 'import sys; print("PERSONA_TEST_PYTHON="+sys.executable)' >> "$GITHUB_ENV"
+          if [[ "${{ runner.os }}" == Windows ]]; then
+            target_env="${CARGO_BUILD_TARGET//-/_}"
+            echo "CARGO_TARGET_${target_env^^}_RUSTFLAGS=-C target-feature=+crt-static" >> "$GITHUB_ENV"
+          fi
       - uses: Swatinem/rust-cache@v2
-      - run: cargo fmt --check
-      - run: cargo test --locked
-      - run: cargo clippy --locked --all-targets -- -D warnings
-      - run: cargo build --locked
-      - run: python3 tests/test_import_document.py
-      - run: python3 tests/test_transcription_adapter.py
-      - run: python3 tests/test_installer.py
+      - run: cargo +1.93.0 fmt --check
+      - run: cargo +1.93.0 test --locked
+      - run: cargo +1.93.0 clippy --locked --all-targets -- -D warnings
+      - run: cargo +1.93.0 build --release --locked
+      - name: Legacy Linux installer and converters
+        if: runner.os == 'Linux'
+        run: |
+          python tests/test_import_document.py
+          python tests/test_transcription_adapter.py
+          python tests/test_installer.py
+      - name: Package private document runtime
+        run: python scripts/package-native.py --binary "target/${{ matrix.target }}/release/${{ matrix.executable }}" --target "${{ matrix.target }}" --version 0.7.0 --output dist
+      - name: Launch extracted native app without system developer tools
+        run: |
+          package=$(python -c 'import pathlib; print(next(p for p in pathlib.Path("dist").iterdir() if p.name.endswith((".zip", ".tar.gz"))))')
+          python tests/native_launch.py --package "$package" --result dist/native-launch-${{ matrix.target }}.json
       - uses: actions/setup-node@v4
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
         with:
           node-version: 22
-      - run: npm ci && npx playwright install --with-deps chromium
-        working-directory: ui/tests
-      - run: npm test && node real-service.mjs && node markdown.mjs
-        working-directory: ui/tests
+      - name: Actual UI journeys and native first account
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        env:
+          PERSONA_BINARY: ${{ github.workspace }}/target/${{ matrix.target }}/release/${{ matrix.executable }}
+        run: |
+          cd ui/tests
+          npm ci
+          npx playwright install --with-deps chromium
+          npm test
+          node real-service.mjs
+          node markdown.mjs
+          cd ../..
+          package=$(python -c 'import pathlib; print(next(p for p in pathlib.Path("dist").iterdir() if p.name.endswith(".tar.gz")))')
+          python tests/native_launch.py --package "$package" --browser --result dist/native-browser.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-persona-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error

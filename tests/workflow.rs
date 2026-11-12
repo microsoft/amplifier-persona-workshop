@@ -34,13 +34,17 @@ impl Fixture {
             port: 0,
             public_url: "https://fixture.test:18448".into(),
             pam_service: "persona-workshop".into(),
+            auth_mode: Default::default(),
+            web_transport: Default::default(),
+            document_python: std::env::var_os("PERSONA_TEST_PYTHON").map(PathBuf::from),
+            pdf_backend: Default::default(),
             tls_cert: home.path().join("unused.crt"),
             tls_key: home.path().join("unused.key"),
             tls_ca: None,
             embed_origins: vec![],
             transcription: None,
             extractor: Some(Extractor {
-                command: "python3".into(),
+                command: if cfg!(windows) { "python" } else { "python3" }.into(),
                 args: vec![format!(
                     "{}/tests/fixture_acp.py",
                     env!("CARGO_MANIFEST_DIR")
@@ -1961,7 +1965,7 @@ async fn configured_recording_provider_receives_private_file_and_output_is_unass
     use base64::{Engine, engine::general_purpose::STANDARD};
     let mut f = Fixture::new("normal");
     let mut config = f.state.config.clone();
-    config.transcription=Some(Extractor{command:"python3".into(),args:vec!["-c".into(),"import sys,json,pathlib; r=json.load(sys.stdin); assert r['schema']=='persona-transcription/1'; assert pathlib.Path(r['media_path']).read_bytes()==b'SYNTHETIC_MEDIA'; print(json.dumps({'segments':[{'speaker':'speaker_1','start':0,'end':1,'text':'Synthetic attributed phrase.'}]}))".into()],cwd:f.state.home.to_string_lossy().into_owned(),env:Default::default(),timeout_seconds:10});
+    config.transcription=Some(Extractor{command:if cfg!(windows){"python"}else{"python3"}.into(),args:vec!["-c".into(),"import sys,json,pathlib; r=json.load(sys.stdin); assert r['schema']=='persona-transcription/1'; assert pathlib.Path(r['media_path']).read_bytes()==b'SYNTHETIC_MEDIA'; print(json.dumps({'segments':[{'speaker':'speaker_1','start':0,'end':1,'text':'Synthetic attributed phrase.'}]}))".into()],cwd:f.state.home.to_string_lossy().into_owned(),env:Default::default(),timeout_seconds:10});
     config.save(&f.state.home).unwrap();
     f.state = AppState::open(f.state.home.clone()).unwrap();
     f.app = server::router(f.state.clone());

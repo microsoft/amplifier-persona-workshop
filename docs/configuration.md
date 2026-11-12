@@ -16,7 +16,7 @@ The extractor file passed to the installer has this shape:
 
 The command speaks ACP v1 over stdin/stdout. It must support initialize, session/new and session/prompt. Configure its account separately; never put credentials in source artifacts, profile packages or browser view state. The service gives it the selected attributed text, not source paths, speaker identity bindings or the rest of the project. Restrict native tools at the endpoint too: empty ACP client capabilities only constrain client-provided tools.
 
-`bind` and `port` set the listening address. Port 0 selects a free port; `runtime.json` reports the actual port after startup. A fixed port is preferable behind a reverse proxy. `public_url` is the trusted HTTPS origin. `embed_origins` is an explicit list of allowed HTTPS frame origins; empty means same-origin only. The UI uses relative routes, secure cookies and same-origin CSRF checks.
+For the existing HTTPS configuration, `bind` and `port` set the listening address. Port 0 selects a free port; `runtime.json` reports the actual port after startup. A fixed port is preferable behind a reverse proxy. `public_url` is the trusted HTTPS origin. `embed_origins` is an explicit list of allowed HTTPS frame origins; empty means same-origin only. The UI uses relative routes, secure cookies and same-origin CSRF checks.
 
 ## Existing agent connections
 
@@ -139,3 +139,34 @@ A live smoke check used two synthetic macOS voices and returned five segments
 with separate A/B labels. It verifies transport and this synthetic sample, not
 accuracy on real meetings. Run `python3 -m unittest discover -s tests -p
 'test_*.py'` for the local wire-format and document-import tests.
+
+## Native app setup
+
+The native package opens the existing workbench and creates an installation-local
+password. It does not choose an analysis model or configure transcription. The
+normal first-run link carries a short-lived setup capability in its URL fragment;
+the browser removes it immediately. Creating an account is create-only. An
+interrupted response is inspected through the existing session endpoint rather
+than replacing credentials. Reopen the local app if an unused setup link expires.
+
+New native configurations use `auth_mode: "local-password"` and
+`web_transport: "local-http"`. HTTP binds exactly `127.0.0.1`, pins its configured
+origin, rejects cross-origin requests and permits no external embedding. CLI
+requests prove the saved installation's identity on the same TCP connection
+before sending a management credential. Existing configurations without these
+fields retain `pam`/`https`; native startup never converts an existing account.
+
+`document_python` identifies the installation's private interpreter. Native
+packages select `pdf_backend: "pypdf"` with pinned pypdf 7.0.1. This extracts
+readable text, preserves importer-supplied attribution, and rejects encrypted,
+scanned/empty and malformed PDFs. It does not provide OCR or guarantee the same
+layout as Poppler; inspect imported text before using it as evidence. Extraction
+has bounded page/stream/text work and runs in the existing timed converter process.
+Legacy configurations keep `pdf_backend: "pdftotext"` and the existing system
+Python/Poppler path. EML, HTML, DOCX and ODT use the same converter logic in both.
+
+Bundled interpreter archives and distributor notices are pinned by the umbrella's
+[private Python packaging support](https://github.com/microsoft/amplifier-constellation/tree/main/packaging/python).
+The package manifest binds their files and the PDF wheel. Neither modifies the
+system interpreter. Recordings still require an explicitly configured transcription
+provider; missing capabilities are reported rather than downloading a model.

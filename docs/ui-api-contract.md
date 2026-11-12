@@ -168,3 +168,21 @@ New artifact kinds are `email`, `document`, and `recording`. Recording imports
 ignore proposed author defaults until an explicit artifact speaker selection is
 saved, even when the model uses a familiar person's name as a diarization label.
 See configuration for the replaceable transcription command contract.
+
+## Native local account and startup
+
+`GET /auth/session` also reports `auth_mode` and `first_account_needed`.
+For a fresh native installation only, `POST /auth/first-account` accepts
+`{setup_token, password, start_at_signin}` and returns the normal signed-in cookie
+and CSRF response. Its private, expiring, installation-bound capability comes from
+opening the local app; it is not an account-reset API. Wrong/expired capabilities
+are refused, and an existing credential is never replaced. Startup failure leaves
+the newly created account usable and records the failure.
+
+Authenticated admin `GET /api/v1/startup` reads the last current-user startup
+result; `POST /api/v1/startup` accepts `{enabled}`. Existing PAM deployments remain
+owner-managed. The local-only `GET /api/v1/local-proof?nonce=…` is a bounded
+installation proof for the native launcher/CLI, not authentication or access.
+HTTPS deployments do not expose it. Shared cryptographic primitives live in the
+[umbrella native-platform crate](https://github.com/microsoft/amplifier-constellation/tree/main/crates/native-platform);
+Persona Workshop owns the HTTP, session, cookie and permission behavior.

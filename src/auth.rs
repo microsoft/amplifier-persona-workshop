@@ -1,25 +1,30 @@
 use crate::{
+    config::{AuthMode, Config, WebTransport},
     error::{ApiError, ApiResult},
     state::{AppState, now_ms},
 };
 use axum::{
     Json,
-    extract::State,
+    extract::{Query, State},
     http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
 };
 use rand::RngCore;
 use rusqlite::{OptionalExtension, params};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
+#[cfg(target_os = "linux")]
 use std::ffi::{CStr, CString};
+use std::path::Path;
 use std::sync::Arc;
 
+#[cfg(target_os = "linux")]
 struct PasswordConversation {
     password: String,
     answered: bool,
 }
+#[cfg(target_os = "linux")]
 impl pam_client::ConversationHandler for PasswordConversation {
     fn prompt_echo_on(&mut self, _: &CStr) -> Result<CString, pam_client::ErrorCode> {
         Err(pam_client::ErrorCode::CONV_ERR)
@@ -41,6 +46,136 @@ impl pam_client::ConversationHandler for PasswordConversation {
     fn error_msg(&mut self, _: &CStr) {}
 }
 
+/// This password belongs only to this installation, not to an OS account.
+pub fn validate_local_password(password: &str) -> anyhow::Result<()> {
+    amplifier_native_platform::local_auth::validate_password(password)
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LocalPassword {
+    schema: u32,
+    password_hash: String,
+}
+
+/// Create-only: normal startup cannot replace an existing password.
+pub fn initialize_local_password(home: &Path, password: &str) -> anyhow::Result<()> {
+    let hash = amplifier_native_platform::local_auth::hash_password(password)?;
+    crate::config::private_dir(&home.join("secrets"))?;
+    crate::config::private_create(
+        &home.join("secrets/local-password.json"),
+        &serde_json::to_vec(&LocalPassword {
+            schema: 1,
+            password_hash: hash,
+        })?,
+    )
+}
+
+pub fn first_account_needed(state: &AppState) -> bool {
+    state.config.auth_mode == AuthMode::LocalPassword
+        && state.config.web_transport == WebTransport::LocalHttp
+        && !state.home.join("secrets/local-password.json").exists()
+        && state.home.join("secrets/first-account.json").is_file()
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FirstAccount {
+    setup_token: String,
+    password: String,
+    #[serde(default)]
+    start_at_signin: bool,
+}
+
+pub async fn first_account(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(input): Json<FirstAccount>,
+) -> ApiResult<Response> {
+    same_origin(&state, &headers)?;
+    if !first_account_needed(&state) {
+        return Err(ApiError(
+            StatusCode::CONFLICT,
+            "This installation already has an account, or was not opened for first setup".into(),
+        ));
+    }
+    let path = state.home.join("secrets/first-account.json");
+    if path.is_symlink() || !std::fs::metadata(&path).is_ok_and(|m| m.len() <= 4096) {
+        return Err(ApiError::forbidden());
+    }
+    let setup: Value =
+        serde_json::from_slice(&std::fs::read(path)?).map_err(|_| ApiError::forbidden())?;
+    if setup["installation_id"] != state.config.id
+        || setup["expires_at"].as_i64().unwrap_or(0) <= now_ms()
+        || !fixed_hex(&input.setup_token)
+        || !setup["token"]
+            .as_str()
+            .is_some_and(|t| constant_equal(t, &input.setup_token))
+    {
+        return Err(ApiError::forbidden());
+    }
+    validate_local_password(&input.password).map_err(|e| ApiError::bad(e.to_string()))?;
+    let permit = state.login_gate.clone().try_acquire_owned().map_err(|_| {
+        ApiError(
+            StatusCode::TOO_MANY_REQUESTS,
+            "Account setup is already running".into(),
+        )
+    })?;
+    let home = state.home.clone();
+    tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        initialize_local_password(&home, &input.password)
+    })
+    .await
+    .map_err(|_| ApiError::bad("Account setup did not complete; reopen the app to inspect it"))?
+    .map_err(|_| {
+        ApiError(
+            StatusCode::CONFLICT,
+            "The account could not be created. Existing credentials have been preserved".into(),
+        )
+    })?;
+    if input.start_at_signin {
+        // Failure never removes an account that has already been created.
+        let home = state.home.clone();
+        let _ = tokio::task::spawn_blocking(move || crate::desktop::set_startup(&home, true)).await;
+    }
+    signed_in(&state, &state.config.owner, "local-setup")
+}
+
+fn local_password_matches(home: &Path, password: &str) -> bool {
+    let path = home.join("secrets/local-password.json");
+    // A corrupt or edited credential never selects a fallback authenticator or
+    // supplies unbounded Argon2 work. Schema 1 has one exact hashing profile.
+    if path.is_symlink() || !std::fs::metadata(&path).is_ok_and(|m| m.len() <= 4096) {
+        return false;
+    }
+    let Ok(bytes) = std::fs::read(path) else {
+        return false;
+    };
+    let Ok(saved) = serde_json::from_slice::<LocalPassword>(&bytes) else {
+        return false;
+    };
+    saved.schema == 1
+        && amplifier_native_platform::local_auth::verify_password(&saved.password_hash, password)
+}
+
+#[cfg(target_os = "linux")]
+fn pam_matches(service: &str, username: &str, password: String) -> bool {
+    let conversation = PasswordConversation {
+        password,
+        answered: false,
+    };
+    let Ok(mut context) = pam_client::Context::new(service, Some(username), conversation) else {
+        return false;
+    };
+    context.authenticate(pam_client::Flag::NONE).is_ok()
+        && context.acct_mgmt(pam_client::Flag::NONE).is_ok()
+}
+#[cfg(not(target_os = "linux"))]
+fn pam_matches(_service: &str, _username: &str, _password: String) -> bool {
+    false
+}
+
 pub fn random_token() -> String {
     let mut bytes = [0u8; 32];
     rand::rngs::OsRng.fill_bytes(&mut bytes);
@@ -48,6 +183,68 @@ pub fn random_token() -> String {
 }
 pub fn digest(value: &str) -> String {
     format!("{:x}", Sha256::digest(value.as_bytes()))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LocalProofQuery {
+    nonce: String,
+}
+fn fixed_hex(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+/// The native client proves a loopback listener before sending its credential.
+/// This does not authenticate a caller or grant management access.
+pub async fn local_proof(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<LocalProofQuery>,
+) -> ApiResult<Json<Value>> {
+    if state.config.web_transport != WebTransport::LocalHttp {
+        return Err(ApiError::missing());
+    }
+    if !fixed_hex(&query.nonce) {
+        return Err(ApiError::bad(
+            "Use a 256-bit lowercase hexadecimal challenge",
+        ));
+    }
+    let credential = std::fs::read_to_string(state.home.join("secrets/control-token"))?;
+    let proof = amplifier_native_platform::local_auth::listener_proof(
+        "persona-workshop.local-proof/1",
+        &state.config.id,
+        &state.config.public_url,
+        &query.nonce,
+        credential.trim(),
+    )
+    .map_err(|_| ApiError::bad("Local installation proof is unavailable"))?;
+    Ok(Json(
+        json!({"schema":1,"id":state.config.id,"origin":state.config.public_url,"nonce":query.nonce,"proof":proof}),
+    ))
+}
+pub fn verify_local_proof(config: &Config, nonce: &str, credential: &str, value: &Value) -> bool {
+    if config.web_transport != WebTransport::LocalHttp
+        || !fixed_hex(nonce)
+        || value["schema"] != 1
+        || value["id"] != config.id
+        || value["origin"] != config.public_url
+        || value["nonce"] != nonce
+    {
+        return false;
+    }
+    let Some(proof) = value["proof"].as_str().filter(|p| fixed_hex(p)) else {
+        return false;
+    };
+    amplifier_native_platform::local_auth::verify_listener_proof(
+        "persona-workshop.local-proof/1",
+        &config.id,
+        &config.public_url,
+        nonce,
+        credential,
+        proof,
+    )
+    .is_ok()
 }
 pub fn cookie_name(state: &AppState) -> String {
     format!("twn_{}", state.config.id.replace('-', ""))
@@ -126,7 +323,7 @@ pub fn check(
         .optional()?;
     let (owner, csrf) = row.ok_or_else(ApiError::unauthorized)?;
     if mutation {
-        same_origin(headers)?;
+        same_origin(state, headers)?;
         if !headers
             .get("x-csrf-token")
             .and_then(|v| v.to_str().ok())
@@ -141,13 +338,18 @@ pub fn check(
         session_hash: Some(hash),
     })
 }
-pub fn same_origin(headers: &HeaderMap) -> ApiResult<()> {
+pub fn same_origin(state: &AppState, headers: &HeaderMap) -> ApiResult<()> {
     if let Some(origin) = headers.get(header::ORIGIN) {
         let host = headers
             .get(header::HOST)
             .and_then(|v| v.to_str().ok())
             .ok_or_else(ApiError::forbidden)?;
-        if origin.to_str().ok() != Some(format!("https://{host}").as_str()) {
+        let expected = if state.config.web_transport == WebTransport::LocalHttp {
+            state.config.public_url.clone()
+        } else {
+            format!("https://{host}")
+        };
+        if origin.to_str().ok() != Some(expected.as_str()) {
             return Err(ApiError::forbidden());
         }
     }
@@ -164,7 +366,7 @@ pub async fn login(
     headers: HeaderMap,
     Json(login): Json<Login>,
 ) -> ApiResult<Response> {
-    same_origin(&headers)?;
+    same_origin(&state, &headers)?;
     if login.username.len() > 100 || login.password.len() > 1024 || login.password.is_empty() {
         return Err(ApiError::unauthorized());
     }
@@ -196,22 +398,17 @@ pub async fn login(
         )?;
     }
     let owner = config.owner.clone();
+    let method = config.auth_mode;
     let service = config.pam_service;
+    let home = state.home.clone();
     let success = if login.username == owner {
         let worker = tokio::task::spawn_blocking(move || {
-            // The permit stays with a timed-out PAM call, bounding blocked workers too.
+            // The permit stays with a timed-out verifier, bounding blocked workers too.
             let _permit = permit;
-            let username = login.username;
-            let conversation = PasswordConversation {
-                password: login.password,
-                answered: false,
-            };
-            let Ok(mut context) = pam_client::Context::new(&service, Some(&username), conversation)
-            else {
-                return false;
-            };
-            context.authenticate(pam_client::Flag::NONE).is_ok()
-                && context.acct_mgmt(pam_client::Flag::NONE).is_ok()
+            match method {
+                AuthMode::Pam => pam_matches(&service, &login.username, login.password),
+                AuthMode::LocalPassword => local_password_matches(&home, &login.password),
+            }
         });
         tokio::time::timeout(std::time::Duration::from_secs(20), worker)
             .await
@@ -223,8 +420,16 @@ pub async fn login(
     };
     if !success {
         state.db.lock().unwrap().execute("INSERT INTO login_attempts(key,failures,locked_until) VALUES('owner',1,0) ON CONFLICT(key) DO UPDATE SET failures=CASE WHEN locked_until>0 AND locked_until<?1 THEN 1 ELSE failures+1 END, locked_until=CASE WHEN failures>=4 THEN ?1+60000 ELSE 0 END",[now_ms()])?;
-        state.audit("auth.failed", None, json!({"method":"pam"}))?;
+        state.audit("auth.failed", None, json!({"method":method.as_str()}))?;
         return Err(ApiError::unauthorized());
+    }
+    signed_in(&state, &owner, method.as_str())
+}
+
+/// Used only after authentication or capability-bound, create-only local setup.
+pub fn signed_in(state: &AppState, owner: &str, method: &str) -> ApiResult<Response> {
+    if owner != state.config.owner {
+        return Err(ApiError::forbidden());
     }
     let token = random_token();
     let csrf = random_token();
@@ -239,12 +444,13 @@ pub async fn login(
     state.audit(
         "auth.signed_in",
         None,
-        json!({"actor":owner,"method":"pam"}),
+        json!({"actor":owner,"method":method}),
     )?;
     let cookie = format!(
-        "{}={}; Secure; HttpOnly; SameSite=Strict; Path=/; Max-Age=28800",
-        cookie_name(&state),
-        token
+        "{}={}; {}HttpOnly; SameSite=Strict; Path=/; Max-Age=28800",
+        cookie_name(state),
+        token,
+        secure_cookie(state),
     );
     Ok((
         [(header::SET_COOKIE, cookie)],
@@ -258,10 +464,10 @@ pub async fn session(
 ) -> ApiResult<Json<Value>> {
     match check(&state, &headers, "observe", false) {
         Ok(p) => Ok(Json(
-            json!({"authenticated":true,"owner":state.config.owner,"csrf":p.csrf}),
+            json!({"authenticated":true,"owner":state.config.owner,"csrf":p.csrf,"auth_mode":state.config.auth_mode,"first_account_needed":first_account_needed(&state)}),
         )),
         Err(e) if e.0 == StatusCode::UNAUTHORIZED => Ok(Json(
-            json!({"authenticated":false,"owner":state.config.owner,"csrf":null}),
+            json!({"authenticated":false,"owner":state.config.owner,"csrf":null,"auth_mode":state.config.auth_mode,"first_account_needed":first_account_needed(&state)}),
         )),
         Err(e) => Err(e),
     }
@@ -280,8 +486,9 @@ pub async fn logout(State(state): State<Arc<AppState>>, headers: HeaderMap) -> A
         [(
             header::SET_COOKIE,
             format!(
-                "{}=; Secure; HttpOnly; SameSite=Strict; Path=/; Max-Age=0",
-                cookie_name(&state)
+                "{}=; {}HttpOnly; SameSite=Strict; Path=/; Max-Age=0",
+                cookie_name(&state),
+                secure_cookie(&state),
             ),
         )],
         Json(json!({"ok":true})),
@@ -289,7 +496,14 @@ pub async fn logout(State(state): State<Arc<AppState>>, headers: HeaderMap) -> A
         .into_response())
 }
 
-#[cfg(test)]
+fn secure_cookie(state: &AppState) -> &'static str {
+    match state.config.web_transport {
+        WebTransport::Https => "Secure; ",
+        WebTransport::LocalHttp => "",
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
     use pam_client::ConversationHandler;
