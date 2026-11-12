@@ -70,7 +70,7 @@ dependencies = [
 [[package]]
 name = "amplifier-native-platform"
 version = "0.1.0"
-source = "git+https://github.com/microsoft/amplifier-constellation?rev=774dcedfde21dfec133cd3c497fd6177e9cdfff6#774dcedfde21dfec133cd3c497fd6177e9cdfff6"
+source = "git+https://github.com/microsoft/amplifier-constellation?rev=178aed21d183adbe95acff7c22e2adfd0da3d268#178aed21d183adbe95acff7c22e2adfd0da3d268"
 dependencies = [
  "anyhow",
  "argon2",
@@ -1708,7 +1708,7 @@ checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 
 [[package]]
 name = "persona-workshop"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "amplifier-acp-connection",
  "amplifier-native-platform",

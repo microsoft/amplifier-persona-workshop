@@ -67,18 +67,30 @@ class Registration:
         if os.name == 'nt':
             # Console-independent Unicode readback. The product's own second API
             # request below separately exercises its COM query under a GUI parent.
-            script = self.root / 'query-task.ps1'
             output = self.root / 'query-task.json'
-            script.write_text('''$ErrorActionPreference = 'Stop'
+            command = r"""$ErrorActionPreference = 'Stop'
+function Resolve-UserSid([string] $name) {
+    if ([string]::IsNullOrWhiteSpace($name)) { throw 'Task owner missing' }
+    if ($name.StartsWith('S-1-')) { return $name }
+    return ([Security.Principal.NTAccount]::new($name)).Translate([Security.Principal.SecurityIdentifier]).Value
+}
 $s = New-Object -ComObject Schedule.Service
 $s.Connect()
-$t = $s.GetFolder('\\').GetTask($env:PERSONA_FIXTURE_TASK)
-$v = @{xml=[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($t.Xml));sid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value}
+$t = $s.GetFolder('\').GetTask($env:PERSONA_FIXTURE_TASK)
+$d = $t.Definition
+$owners = @()
+foreach ($trigger in $d.Triggers) {
+    if ($trigger.Type -ne 9) { throw 'Unexpected startup trigger' }
+    $owners += Resolve-UserSid $trigger.UserId
+}
+$v = @{xml=[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($t.Xml));sid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value;principal_sid=(Resolve-UserSid $d.Principal.UserId);trigger_sids=@($owners)}
 [IO.File]::WriteAllText($env:PERSONA_FIXTURE_OUTPUT,($v|ConvertTo-Json -Compress),[Text.UTF8Encoding]::new($false))
-''', encoding='utf-8')
+"""
             env = dict(os.environ, PERSONA_FIXTURE_TASK=self.label, PERSONA_FIXTURE_OUTPUT=str(output))
             powershell = Path(os.environ['SystemRoot']) / 'System32/WindowsPowerShell/v1.0/powershell.exe'
-            checked([str(powershell), '-NoProfile', '-NonInteractive', '-File', str(script)], env=env)
+            # A fixed native command avoids requiring script execution-policy
+            # changes on an ordinary Windows desktop.
+            checked([str(powershell), '-NoProfile', '-NonInteractive', '-Command', command], env=env)
             value = json.loads(output.read_text(encoding='utf-8'))
             # COM returns a Unicode BSTR whose XML declaration still says UTF-16.
             # Our transport explicitly encodes it as UTF-8; decode that transport
@@ -92,10 +104,12 @@ $v = @{xml=[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($t.Xml));sid
             args = windows_arguments(actions[0].findtext('t:Arguments', namespaces=ns))
             assert len(args) == 3 and args[0] == '--home' and same_path(args[1], self.home) and args[2] == 'serve', args
             principal = principals[0]
-            assert principal.findtext('t:UserId', namespaces=ns) == value['sid']
+            assert value['principal_sid'] == value['sid']
+            assert value['trigger_sids'] == [value['sid']]
             assert principal.findtext('t:LogonType', namespaces=ns) == 'InteractiveToken'
             assert principal.findtext('t:RunLevel', namespaces=ns) in (None, 'LeastPrivilege')
-            assert len(xml.findall('./t:Triggers/t:LogonTrigger', ns)) == 1
+            triggers = xml.findall('./t:Triggers/t:LogonTrigger', ns)
+            assert len(triggers) == 1 and triggers[0].findtext('t:UserId', namespaces=ns)
             result = {'label': self.label, 'executable': str(self.executable), 'arguments': args, 'sid': value['sid']}
         elif sys.platform == 'darwin':
             value = plistlib.loads(self.file.read_bytes())
