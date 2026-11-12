@@ -40,7 +40,7 @@ An analysis endpoint is optional for importing, attribution, manual observations
 
 6. Choose **Use on agent…**, select an existing connection or connect with its management address and access token, and click **Apply profiles**. The agent keeps its own installed copy; drafts never update a running agent automatically. Previous installations can be restored. **Export…** offers an AGENTS.md workspace ZIP, a self-contained SOUL.md ZIP for OpenClaw, or the native `.twin.json` package. Individual profile files remain downloadable.
 
-An **Existing profile** source contributes prior guidance, not a sample of the subject's prose. It is kept distinct from authored material. The extractor looks for concrete phrasing, cadence, structure and context in communication; decision criteria, priorities, tradeoffs and execution preferences in working style. It does not fill sparse evidence with generic advice. See the [profile content contract](docs/profile-content.md).
+An **Existing profile** source contributes prior guidance, not a sample of the subject's prose. It is kept distinct from authored material. The extractor looks for concrete phrasing, cadence, structure and context in communication; decision criteria, priorities, tradeoffs and execution preferences in working style. It does not fill sparse evidence with generic advice.
 
 The [profile content contract](docs/profile-content.md) owns evidence eligibility
 and instruction meaning. The [package schema](schemas/twin-profile.schema.json)
@@ -64,7 +64,9 @@ APP="$INSTANCE/bin/persona-workshop"
 
 The CLI authenticates locally with a private installation control credential, never a user's password. Every UI operation uses the same API. See the [API and view-control contract](docs/ui-api-contract.md), including optimistic revisions, cancelable jobs, private identity access, and view commands for navigation, selection, drafts, focus and scroll. Programmatic uploads send text or base64 file contents through the API; they do not operate a native file picker.
 
-Workspace exports keep provenance in `persona/metadata/`. The AGENTS.md loader references `persona/communication.md` and `persona/working-style.md`; extract the ZIP at the workspace root and keep those relative paths together. If the workspace already has an AGENTS.md, choose **Keep an existing AGENTS.md**: only the marked Persona Workshop section is added or replaced. All other content stays unchanged, and repeating the export does not duplicate the section. The existing file is used only to create your download; the workshop does not save it. CLI `--agents-file` also leaves the source file untouched. SOUL.md contains both instruction profiles directly; combine it with any existing SOUL.md before replacing that file. See [portable exports](docs/portable-exports.md) for host loading details and automation.
+For workspace exports, follow the [format and loading rules](docs/portable-exports.md#formats)
+and [existing-instruction guidance](docs/portable-exports.md#preserving-existing-instructions).
+Combine an exported SOUL.md with any existing SOUL.md before replacing that file.
 
 The UI supports `?embed=1`; configure allowed HTTPS frame origins explicitly. Same-origin embedding can call `window.personaWorkshop`; cross-origin hosts can use the authenticated semantic HTTP API. Authentication/session provisioning is the host's responsibility. A future fleet UI can integrate these contracts without depending on this service's internals.
 
