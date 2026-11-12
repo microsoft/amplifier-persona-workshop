@@ -74,6 +74,10 @@ pub fn create(home: &Path, port: u16) -> Result<()> {
         pdf_backend: PdfBackend::Pypdf,
     };
     config.save(&stage)?;
+    platform::private_create(
+        &stage.join("native-installation.json"),
+        &serde_json::to_vec(&json!({"schema":1,"id":config.id,"update_owner":"installation"}))?,
+    )?;
     platform::copy_self(&APPLICATION, &stage)?;
     platform::private_create(
         &stage.join("secrets/first-account.json"),
@@ -395,5 +399,55 @@ fn install_support(home: &Path) -> Result<()> {
         "Private Python executable missing"
     );
     platform::private_write(&home.join("runtime/native-bundle.json"), &bytes)?;
+    Ok(())
+}
+
+/// Copy only verified installation-owned runtime files for the independent updater.
+pub fn copy_runtime(source: &Path, destination: &Path) -> Result<()> {
+    use sha2::{Digest, Sha256};
+    ensure!(!destination.exists(), "Worker runtime already exists");
+    let raw = std::fs::read(source.join("native-bundle.json"))?;
+    ensure!(
+        raw.len() <= 4 * 1024 * 1024,
+        "Runtime inventory exceeds bound"
+    );
+    let manifest: Value = serde_json::from_slice(&raw)?;
+    ensure!(
+        manifest["component"] == "persona-workshop",
+        "Unexpected private runtime"
+    );
+    let files = manifest["python_files"]
+        .as_object()
+        .context("Missing private runtime inventory")?;
+    ensure!(
+        !files.is_empty() && files.len() <= 20000,
+        "Invalid private runtime inventory"
+    );
+    platform::private_dir(destination)?;
+    for (name, expected) in files {
+        let path = Path::new(name);
+        ensure!(
+            path.components()
+                .all(|c| matches!(c, std::path::Component::Normal(_)))
+                && !name.contains(['\\', ':']),
+            "Unsafe private runtime member"
+        );
+        let input = source.join("python").join(path);
+        let m = std::fs::symlink_metadata(&input)?;
+        ensure!(
+            m.is_file() && m.len() <= 256 * 1024 * 1024,
+            "Invalid private runtime file"
+        );
+        let bytes = std::fs::read(&input)?;
+        ensure!(
+            expected.as_str() == Some(format!("{:x}", Sha256::digest(&bytes)).as_str()),
+            "Private runtime checksum mismatch"
+        );
+        let output = destination.join("python").join(path);
+        std::fs::create_dir_all(output.parent().context("Missing file parent")?)?;
+        std::fs::write(&output, bytes)?;
+        std::fs::set_permissions(&output, m.permissions())?;
+    }
+    platform::private_write(&destination.join("native-bundle.json"), &raw)?;
     Ok(())
 }

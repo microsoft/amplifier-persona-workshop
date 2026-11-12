@@ -73,6 +73,7 @@ fn resume_suspended(child: &Child) -> Result<()> {
         Foundation::*,
         System::{Diagnostics::ToolHelp::*, Threading::*},
     };
+    let child_id = child.id().context("Child process exited before resume")?;
     let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) };
     ensure!(
         snapshot != INVALID_HANDLE_VALUE,
@@ -83,7 +84,7 @@ fn resume_suspended(child: &Child) -> Result<()> {
     let mut found = None;
     let mut available = unsafe { Thread32First(snapshot, &mut entry) } != 0;
     while available {
-        if entry.th32OwnerProcessID == child.id().context("Child process exited before resume")? {
+        if entry.th32OwnerProcessID == child_id {
             found = Some(entry.th32ThreadID);
             break;
         }

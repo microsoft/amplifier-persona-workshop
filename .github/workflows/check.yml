@@ -58,6 +58,8 @@ jobs:
       - run: cargo +1.93.0 test --locked
       - run: cargo +1.93.0 clippy --locked --all-targets -- -D warnings
       - run: cargo +1.93.0 build --release --locked
+      - name: Native update ownership, integrity and uncertainty boundaries
+        run: python tests/native_update.py
       - name: Legacy Linux installer and converters
         if: runner.os == 'Linux'
         run: |
@@ -70,6 +72,10 @@ jobs:
         run: |
           package=$(python -c 'import pathlib; print(next(p for p in pathlib.Path("dist").iterdir() if p.name.endswith((".zip", ".tar.gz"))))')
           python tests/native_launch.py --package "$package" --result dist/native-launch-${{ matrix.target }}.json
+      - name: Actual packaged update and binary-only recovery
+        run: |
+          package=$(python -c 'import pathlib; print(next(p for p in pathlib.Path("dist").iterdir() if p.name.endswith((".zip", ".tar.gz"))))')
+          python tests/native_update_process.py --package "$package" --result dist/native-update-${{ matrix.target }}.json
       - uses: actions/setup-node@v4
         if: matrix.target == 'x86_64-unknown-linux-gnu'
         with:

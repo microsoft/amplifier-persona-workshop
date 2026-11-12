@@ -82,6 +82,18 @@ pub fn router(state: Arc<AppState>) -> Router {
             get(crate::desktop::startup_get).post(crate::desktop::startup_set),
         )
         .route("/api/v1/status", get(status))
+        .route(
+            "/api/v1/desktop/updates",
+            get(crate::native_update::get).post(crate::native_update::command),
+        )
+        .route(
+            "/api/v1/desktop/update-readiness",
+            get(crate::native_update::readiness),
+        )
+        .route(
+            "/api/v1/desktop/update-stop",
+            post(crate::native_update::stop),
+        )
         .route("/api/v1/tokens", get(tokens).post(create_token))
         .route("/api/v1/tokens/{id}", axum::routing::delete(revoke_token))
         .route("/api/v1/activity", get(activity))
@@ -161,6 +173,10 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/views/{id}/commands", post(view_commands))
         .route("/api/v1/views/{id}/ack", post(view_ack))
         .layer(DefaultBodyLimit::max(30 * 1024 * 1024))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            crate::native_update::admission,
+        ))
         .layer(middleware::from_fn_with_state(state.clone(), headers))
         .with_state(state)
 }
@@ -227,7 +243,7 @@ async fn status(State(s): S, h: HeaderMap) -> ApiResult<Json<Value>> {
     auth::check(&s, &h, "observe", false)?;
     let ready = s.config.extractor.is_some();
     Ok(Json(
-        json!({"id":s.config.id,"version":env!("CARGO_PKG_VERSION"),"extractor_ready":ready,"extractor":{"ready":ready,"note":if ready{"ACP analysis endpoint configured"}else{"Configure an ACP endpoint using the installer or config file"}},"owner":s.config.owner,"public_url":s.config.public_url,"calibrated":false}),
+        json!({"id":s.config.id,"pid":std::process::id(),"version":env!("CARGO_PKG_VERSION"),"extractor_ready":ready,"extractor":{"ready":ready,"note":if ready{"ACP analysis endpoint configured"}else{"Configure an ACP endpoint using the installer or config file"}},"owner":s.config.owner,"public_url":s.config.public_url,"calibrated":false}),
     ))
 }
 async fn activity(State(s): S, h: HeaderMap) -> ApiResult<Json<Value>> {
@@ -813,7 +829,12 @@ pub async fn serve_with_browser(
         if !open_browser {
             crate::desktop::ready(&s.home, &s.config, false)?;
         }
-        axum::serve(tokio::net::TcpListener::from_std(listener)?, router(s)).await?;
+        s.update_shutdown_available
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let shutdown = s.update_shutdown.clone();
+        axum::serve(tokio::net::TcpListener::from_std(listener)?, router(s))
+            .with_graceful_shutdown(async move { shutdown.notified().await })
+            .await?;
         return Ok(());
     }
     let tls =
