@@ -522,7 +522,7 @@ async fn native_update_waits_for_work_and_keeps_login_and_status_available() {
     std::fs::create_dir_all(&folder).unwrap();
     std::fs::write(
         folder.join("plan.json"),
-        json!({"id":id,"state":"recovery_required"}).to_string(),
+        json!({"schema":1,"id":id,"state":"recovery_required","action":"apply"}).to_string(),
     )
     .unwrap();
     std::fs::write(

@@ -14,6 +14,43 @@ import time
 import urllib.request
 import urllib.error
 import zipfile
+import uuid
+
+def superseded_launch(binary, home, env):
+    """A delayed replacement must fail before opening saved state or a listener."""
+    root=home/'native-updates';assert not root.exists()
+    plan=str(uuid.uuid4());old_nonce=str(uuid.uuid4());folder=root/plan;folder.mkdir(parents=True)
+    executable=home/'bin'/binary.name;sha=hashlib.sha256(executable.read_bytes()).hexdigest()
+    record={'schema':1,'id':plan,'state':'rolling_back','action':'rollback','previous_sha256':sha,'launch':{'nonce':str(uuid.uuid4()),'mode':'rollback','binary_sha256':sha}}
+    marker=root/'active.json';marker.write_text(json.dumps({'id':plan}),encoding='utf-8')
+    journal=folder/'plan.json';journal.write_text(json.dumps(record),encoding='utf-8')
+    before={p:p.read_bytes() for p in [journal,marker,home/'config.json',*home.glob('state.sqlite3*')]}
+    try:
+        result=subprocess.run([str(executable),'--home',str(home),'serve'],env={**env,'PERSONA_UPDATE_PLAN':plan,'PERSONA_UPDATE_LAUNCH':old_nonce},capture_output=True,text=True,encoding='utf-8',timeout=10)
+        assert result.returncode!=0 and 'Update launch was superseded' in result.stderr,(result.returncode,result.stderr)
+        assert all(p.read_bytes()==data for p,data in before.items()),'Rejected old launch changed saved state'
+        recovery=subprocess.Popen([str(executable),'--home',str(home),'serve'],env=env,stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+        try:
+            base=json.loads((home/'runtime.json').read_text(encoding='utf-8'))['url']
+            for _ in range(100):
+                try:
+                    if request(base,'/auth/session')[0]==200:break
+                except (OSError,ValueError):pass
+                assert recovery.poll() is None,'Management recovery process exited';time.sleep(.1)
+            else:raise AssertionError('Management recovery did not become available')
+            headers={'Authorization':'Bearer '+(home/'secrets/control-token').read_text(encoding='utf-8').strip()}
+            code,_,update=request(base,'/api/v1/desktop/updates',headers=headers)
+            assert code==200 and update['current']['id']==plan
+            code,_,_=request(base,'/api/v1/projects',{'alias':'Must remain uncreated','subject_type':'fictional'},headers)
+            assert code==503,'Recovery UI must not admit new work'
+            journal.write_bytes(b'{damaged')
+            code,_,update=request(base,'/api/v1/desktop/updates',headers=headers)
+            assert code==200 and update['journal_error'] and update['current'] is None
+            assert request(base,'/api/v1/projects',{'alias':'Still not created','subject_type':'fictional'},headers)[0]==503
+            assert request(base,'/api/v1/desktop/updates',{'action':'check','request_id':str(uuid.uuid4())},headers)[0]!=200
+            assert journal.read_bytes()==b'{damaged' and marker.read_bytes()==before[marker]
+        finally:recovery.terminate();recovery.wait(timeout=20)
+    finally:shutil.rmtree(root)
 
 def extract(package,folder):
     if package.name.endswith('.zip'):
@@ -90,6 +127,7 @@ def run(package,result,browser=False):
             project_id=project['id'];status,_,saved=request(base,'/api/v1/projects/'+project_id,headers=authorization);assert status==200
 
         finally:p.terminate();p.wait(timeout=20);log.close()
+        superseded_launch(binary,home,env);checks.extend(['superseded replacement refuses before state/listener mutation','recovery management stays available; unreadable journal is visible, preserved and refuses new work'])
         p,base,log=start()
         try:
             assert (home/'config.json').read_bytes()==config_bytes
@@ -98,7 +136,7 @@ def run(package,result,browser=False):
             status,_,reloaded=request(base,'/api/v1/projects/'+project_id,headers=authorization);assert status==200 and reloaded==saved
         finally:p.terminate();p.wait(timeout=20);log.close()
         assert not (home/'startup.json').exists();checks.append('startup false does not register an OS service')
-    receipt={'passed':True,'checks':checks,'package':str(package),'package_sha256':hashlib.sha256(package.read_bytes()).hexdigest(),'limitations':['No model/provider or transcription call','No publisher signing/notarization claim','Startup opt-in tested separately by native-platform native CI']}
+    receipt={'passed':True,'checks':checks,'package':str(package),'package_sha256':hashlib.sha256(package.read_bytes()).hexdigest(),'limitations':['No model/provider or transcription call','No publisher signing/notarization claim','Startup opt-in tested separately by the packaged native_startup.py fixture']}
     if result:result.write_text(json.dumps(receipt,indent=2)+'\n')
     print(json.dumps(receipt,indent=2))
 if __name__=='__main__':
