@@ -98,7 +98,7 @@ def run(package,result,browser=False):
             status,_,reloaded=request(base,'/api/v1/projects/'+project_id,headers=authorization);assert status==200 and reloaded==saved
         finally:p.terminate();p.wait(timeout=20);log.close()
         assert not (home/'startup.json').exists();checks.append('startup false does not register an OS service')
-    receipt={'passed':True,'checks':checks,'package':str(package),'package_sha256':hashlib.sha256(package.read_bytes()).hexdigest(),'limitations':['No model/provider or transcription call','No publisher signing/notarization claim','Startup opt-in tested separately by native-platform native CI']}
+    receipt={'passed':True,'checks':checks,'package':str(package),'package_sha256':hashlib.sha256(package.read_bytes()).hexdigest(),'limitations':['No model/provider or transcription call','No publisher signing/notarization claim','Startup opt-in tested separately by the packaged native_startup.py fixture']}
     if result:result.write_text(json.dumps(receipt,indent=2)+'\n')
     print(json.dumps(receipt,indent=2))
 if __name__=='__main__':

@@ -44,6 +44,12 @@ jobs:
       - name: Linux build prerequisites
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libpam0g-dev libclang-dev pkg-config poppler-utils
+      - name: Current-user service manager for disposable startup fixture
+        if: runner.os == 'Linux'
+        run: |
+          sudo systemctl start "user@$(id -u).service"
+          echo "XDG_RUNTIME_DIR=/run/user/$(id -u)" >> "$GITHUB_ENV"
+          echo "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus" >> "$GITHUB_ENV"
       - name: Native toolchain and test interpreter
         run: |
           rustup toolchain install 1.93.0 --profile minimal --component rustfmt --component clippy
@@ -72,6 +78,10 @@ jobs:
         run: |
           package=$(python -c 'import pathlib; print(next(p for p in pathlib.Path("dist").iterdir() if p.name.endswith((".zip", ".tar.gz"))))')
           python tests/native_launch.py --package "$package" --result dist/native-launch-${{ matrix.target }}.json
+      - name: Actual packaged sign-in startup, query, launch and removal
+        run: |
+          package=$(python -c 'import pathlib; print(next(p for p in pathlib.Path("dist").iterdir() if p.name.endswith((".zip", ".tar.gz"))))')
+          python tests/native_startup.py --package "$package" --result dist/native-startup-${{ matrix.target }}.json
       - name: Actual packaged update and binary-only recovery
         run: |
           package=$(python -c 'import pathlib; print(next(p for p in pathlib.Path("dist").iterdir() if p.name.endswith((".zip", ".tar.gz"))))')
