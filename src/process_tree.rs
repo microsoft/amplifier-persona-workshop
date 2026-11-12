@@ -1,6 +1,6 @@
 //! Native ACP process lifetime. Mirrors Instance's kernel job ownership;
 //! remote services remain owned by their remote installation.
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, ensure};
 use std::{mem, ptr};
 use tokio::process::Child;
 use windows_sys::Win32::{Foundation::CloseHandle, System::JobObjects::*};
