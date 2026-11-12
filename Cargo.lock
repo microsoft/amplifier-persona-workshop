@@ -70,7 +70,7 @@ dependencies = [
 [[package]]
 name = "amplifier-native-platform"
 version = "0.1.0"
-source = "git+https://github.com/microsoft/amplifier-constellation?rev=24a9b1f3e03e923f096c45a79b9cb1c94f097624#24a9b1f3e03e923f096c45a79b9cb1c94f097624"
+source = "git+https://github.com/microsoft/amplifier-constellation?rev=b65ed668c7df2ac4df3b15198bf8fb4db44abbec#b65ed668c7df2ac4df3b15198bf8fb4db44abbec"
 dependencies = [
  "anyhow",
  "argon2",
