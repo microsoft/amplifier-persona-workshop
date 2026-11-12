@@ -73,7 +73,9 @@ jobs:
           python tests/test_transcription_adapter.py
           python tests/test_installer.py
       - name: Package private document runtime
-        run: python scripts/package-native.py --binary "target/${{ matrix.target }}/release/${{ matrix.executable }}" --target "${{ matrix.target }}" --version 0.7.0 --output dist
+        run: |
+          version=$(python -c 'import pathlib,tomllib; print(tomllib.loads(pathlib.Path("Cargo.toml").read_text())["package"]["version"])')
+          python scripts/package-native.py --binary "target/${{ matrix.target }}/release/${{ matrix.executable }}" --target "${{ matrix.target }}" --version "$version" --output dist
       - name: Launch extracted native app without system developer tools
         run: |
           package=$(python -c 'import pathlib; print(next(p for p in pathlib.Path("dist").iterdir() if p.name.endswith((".zip", ".tar.gz"))))')
