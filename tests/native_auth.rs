@@ -468,3 +468,124 @@ async fn expired_first_account_does_not_create_credentials_or_alter_saved_record
     );
     assert!(!home.path().join("secrets/local-password.json").exists());
 }
+
+#[tokio::test]
+async fn native_update_waits_for_work_and_keeps_login_and_status_available() {
+    let (home, state, app) = fixture(true);
+    let token = std::fs::read_to_string(home.path().join("secrets/control-token")).unwrap();
+    let bearer = format!("Bearer {token}");
+    let headers = [
+        ("host", "127.0.0.1:49152"),
+        ("authorization", bearer.as_str()),
+    ];
+    let (_, _, ready) = request(
+        &app,
+        "GET",
+        "/api/v1/desktop/update-readiness",
+        &headers,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(ready["idle"], true);
+    let permit = state.work_gate.acquire().await.unwrap();
+    let (_, _, ready) = request(
+        &app,
+        "GET",
+        "/api/v1/desktop/update-readiness",
+        &headers,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(ready["idle"], false);
+    drop(permit);
+    state
+        .db
+        .lock()
+        .unwrap()
+        .execute(
+            "INSERT INTO jobs VALUES('pending','project','{\"status\":\"queued\"}')",
+            [],
+        )
+        .unwrap();
+    let (_, _, ready) = request(
+        &app,
+        "GET",
+        "/api/v1/desktop/update-readiness",
+        &headers,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(ready["idle"], false);
+    assert_eq!(ready["pending_work"], 1);
+    let id = uuid::Uuid::new_v4().to_string();
+    let folder = home.path().join("native-updates").join(&id);
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::write(
+        folder.join("plan.json"),
+        json!({"id":id,"state":"recovery_required"}).to_string(),
+    )
+    .unwrap();
+    std::fs::write(
+        home.path().join("native-updates/active.json"),
+        json!({"id":id}).to_string(),
+    )
+    .unwrap();
+    assert_eq!(
+        request(
+            &app,
+            "POST",
+            "/api/v1/projects",
+            &headers,
+            json!({"alias":"Should not be created"})
+        )
+        .await
+        .0,
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    assert_eq!(
+        request(&app, "GET", "/api/v1/status", &headers, Value::Null)
+            .await
+            .0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        login(&app, PASSWORD, true).await.0,
+        StatusCode::OK,
+        "Owner must still be able to sign in to recover"
+    );
+}
+
+#[tokio::test]
+async fn update_admission_waits_for_inflight_mutations_without_blocking_reads() {
+    use fs2::FileExt;
+    let (home, _state, app) = fixture(true);
+    std::fs::create_dir_all(home.path().join("updates")).unwrap();
+    let guard = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(home.path().join("updates/admission.lock"))
+        .unwrap();
+    guard.try_lock_exclusive().unwrap();
+    let headers = [("host", "127.0.0.1:49152")];
+    assert_eq!(
+        request(&app, "POST", "/api/v1/projects", &headers, json!({}))
+            .await
+            .0,
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    assert_eq!(
+        request(&app, "GET", "/auth/session", &headers, Value::Null)
+            .await
+            .0,
+        StatusCode::OK
+    );
+    drop(guard);
+    assert_eq!(
+        request(&app, "POST", "/api/v1/projects", &headers, json!({}))
+            .await
+            .0,
+        StatusCode::UNAUTHORIZED
+    );
+}

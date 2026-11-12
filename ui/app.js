@@ -21,6 +21,9 @@
   document.body.classList.toggle("embed", query.get("embed") === "1");
   const S = {
     auth: null,
+    nativeUpdates: null,
+    updatesOpen: false,
+    updateError: "",
     view: null,
     projects: [],
     project: null,
@@ -833,9 +836,41 @@
     } else return "";
     return `<div class="modal-backdrop"><section class="modal ${wide ? "wide" : ""}" role="dialog" aria-modal="true" aria-labelledby="modal-title" tabindex="-1"><div class="modal-head"><div><h2 id="modal-title">${esc(title)}</h2>${description ? `<p>${esc(description)}</p>` : ""}</div><button type="button" class="icon-button" data-action="modal.close" aria-label="Close dialog">×</button></div>${S.error ? `<div class="banner error" role="alert">${esc(S.error)}</div>` : ""}${body}</section></div>`;
   }
+  const updateIntentKey="persona-native-update-intent";
+  function pendingUpdate(){try{return JSON.parse(sessionStorage.getItem(updateIntentKey)||"null");}catch{return null;}}
+  function nativeUpdatesDialog(){
+    if(!S.updatesOpen)return "";
+    const current=S.nativeUpdates?.current, phase=current?.state;
+    const words={queued:"Preparing",checking:"Checking the published release",ready:"Ready to install",draining:"Waiting for current work",stopping:"Closing the app safely",swapping:"Installing",verifying:"Checking the restarted app",succeeded:"Installed",rolled_back:"Previous version restored",deferred:"Current work needs to finish first",failed:"The update did not complete",recovery_required:"The interrupted update needs recovery",rolling_back:"Restoring the previous app version"};
+    const pending=pendingUpdate();
+    const button=(action,text,disabled=false)=>`<button class="button secondary" data-native-update="${action}" ${disabled?"disabled":""}>${text}</button>`;
+    const busy=["queued","checking","draining","stopping","swapping","verifying","rolling_back","recovery_required"].includes(phase);
+    return `<div class="modal-backdrop"><section class="modal" role="dialog" aria-modal="true" aria-labelledby="native-updates-title" tabindex="-1"><div class="modal-head"><h2 id="native-updates-title">App updates</h2><button class="icon-button" data-native-update="close" aria-label="Close app updates">×</button></div><p>Updates keep your projects, sources, profiles, account and settings. Current analysis and imports must finish first.</p>${S.updateError?`<p role="alert">${esc(S.updateError)}</p>`:""}${S.nativeUpdates?.supported===false?`<p>${esc(S.nativeUpdates.reason)}</p>`:`<p>${esc(current?(words[phase]||"Status not yet known"):"No update checked yet")}${current?.version?` · ${esc(current.version)}`:""}</p><div class="actions">${button("status","Refresh status")}${pending?button("retry","Retry the same request"):button("check","Check for an update",busy)}${["ready","deferred"].includes(phase)&&!pending?button(current.action==='rollback'?'rollback':'apply',current.up_to_date?'Verify current version':'Install update'):""}${phase==='succeeded'&&current.previous_sha256&&!pending?button("rollback","Restore previous app version"):""}${current?.recovery_available&&!pending?button("recover","Recover interrupted update"):""}</div>`}<p class="help">Restoring the app never restores an old copy of your project database.</p></section></div>`;
+  }
+  async function updateStatus(){
+    S.nativeUpdates=await api("api/v1/desktop/updates");
+    const intent=pendingUpdate(), current=S.nativeUpdates.current;
+    if(intent&&current&&current.request_id===intent.request_id)sessionStorage.removeItem(updateIntentKey);
+  }
+  app.addEventListener("click",async event=>{
+    const element=event.target.closest("[data-native-update]");if(!element||element.disabled)return;
+    event.preventDefault();const action=element.dataset.nativeUpdate;
+    if(action==='close'){S.updatesOpen=false;render();return;}
+    S.updatesOpen=true;S.updateError="";element.disabled=true;
+    try{
+      if(action==='open'||action==='status'){await updateStatus();}
+      else{
+        const input=action==='retry'?pendingUpdate():{action,request_id:crypto.randomUUID(),...(action==='check'?{}:{plan_id:S.nativeUpdates?.current?.id})};
+        need(input,"Refresh update status first");sessionStorage.setItem(updateIntentKey,JSON.stringify(input));
+        await api("api/v1/desktop/updates",{method:"POST",body:input});sessionStorage.removeItem(updateIntentKey);await updateStatus();
+      }
+    }catch(e){if([400,401,403,409,422].includes(e.status)){sessionStorage.removeItem(updateIntentKey);S.updateError=e.message;}else S.updateError="The request was not confirmed. Refresh status before deciding what to do next.";}
+    render();
+  });
   function render() {
     document.title = S.auth?.authenticated && S.project?.alias ? `${S.project.alias}: Persona Workshop` : "Persona Workshop";
     const active = document.activeElement,
+      updateFocus = active?.dataset?.nativeUpdate,
       focusKey =
         active?.dataset?.draft ||
         active?.dataset?.private ||
@@ -869,7 +904,9 @@
                 : settingsScreen();
     const nav = (k, text = screens[k]) =>
       `<button type="button" class="nav-button ${screen === k || (k === "profiles" && screen === "review") ? "active" : ""}" data-action="screen.${k}" ${screen === k || (k === "profiles" && screen === "review") ? 'aria-current="page"' : ""}><span class="nav-symbol" aria-hidden="true">${icons[k]}</span>${text}</button>`;
-    app.innerHTML = `<div class="shell"><aside class="sidebar"><div class="brand"><span class="mark" aria-hidden="true">pw.</span><strong>Persona Workshop</strong></div>${S.project ? `<div class="project-label"><strong>${esc(S.project.alias)}</strong></div><nav aria-label="Project">${["evidence", "profiles", "evaluate"].map((k) => nav(k)).join("")}</nav>` : ""}<nav class="secondary-nav" aria-label="Workspace">${nav("projects", "All projects")}${S.project ? nav("settings") : ""}<button class="nav-button mobile-signout" data-action="auth.logout">Sign out</button></nav><div class="sidebar-bottom">${link("auth.logout", `Sign out · ${esc(S.auth.owner || "owner")}`)}</div></aside><div class="main-shell"><header class="topbar"><div class="breadcrumb">${S.project ? `${esc(S.project.alias)} <span aria-hidden="true"> / </span> ` : ""}<strong>${screens[screen]}</strong></div><div class="top-right">${S.view.controller !== "human" ? `<button class="controller" data-action="view.takeover">${esc(S.view.controller || "Agent")} is guiding · Take control</button>` : ""}<span class="owner">${esc(S.auth.owner || "")}</span></div></header><main id="main" class="content" aria-busy="${S.busy}">${messages()}${body}</main></div></div>${modal()}`;
+    app.innerHTML = `<div class="shell"><aside class="sidebar"><div class="brand"><span class="mark" aria-hidden="true">pw.</span><strong>Persona Workshop</strong></div>${S.project ? `<div class="project-label"><strong>${esc(S.project.alias)}</strong></div><nav aria-label="Project">${["evidence", "profiles", "evaluate"].map((k) => nav(k)).join("")}</nav>` : ""}<nav class="secondary-nav" aria-label="Workspace">${nav("projects", "All projects")}${S.project ? nav("settings") : ""}<button class="nav-button mobile-signout" data-action="auth.logout">Sign out</button></nav><div class="sidebar-bottom">${link("auth.logout", `Sign out · ${esc(S.auth.owner || "owner")}`)}</div></aside><div class="main-shell"><header class="topbar"><div class="breadcrumb">${S.project ? `${esc(S.project.alias)} <span aria-hidden="true"> / </span> ` : ""}<strong>${screens[screen]}</strong></div><div class="top-right">${S.view.controller !== "human" ? `<button class="controller" data-action="view.takeover">${esc(S.view.controller || "Agent")} is guiding · Take control</button>` : ""}<span class="owner">${esc(S.auth.owner || "")}</span>${S.auth.auth_mode === "local-password" ? `<button class="text-button" data-native-update="open">App updates</button>` : ""}</div></header><main id="main" class="content" aria-busy="${S.busy}">${messages()}${body}</main></div></div>${modal()}${nativeUpdatesDialog()}`;
+    if(updateFocus)app.querySelector(`[data-native-update="${CSS.escape(updateFocus)}"]`)?.focus({preventScroll:true});
+    if(S.updatesOpen&&(!updateFocus||updateFocus==='open'))app.querySelector('[aria-labelledby="native-updates-title"]')?.focus({preventScroll:true});
     if (focusKey) {
       const next = [
         ...app.querySelectorAll("[data-draft],[data-private],[data-control]"),
@@ -1867,7 +1904,7 @@
     if (!dialog) return;
     if (event.key === "Escape") {
       event.preventDefault();
-      act("modal.close");
+      if(S.updatesOpen){S.updatesOpen=false;render();}else act("modal.close");
       return;
     }
     if (event.key === "Tab") {
@@ -1938,6 +1975,11 @@
     S.pollBusy = true;
     try {
       await S.queued;
+      if(S.updatesOpen){
+        const previous=JSON.stringify([S.nativeUpdates,S.updateError,pendingUpdate()]);
+        try{await updateStatus();S.updateError="";}catch{S.updateError="The app is reconnecting. Refresh status after it returns.";}
+        if(previous!==JSON.stringify([S.nativeUpdates,S.updateError,pendingUpdate()]))render();
+      }
       const remote = await api(`api/v1/views/${encodeURIComponent(S.view.id)}`);
       if (remote.revision > S.view.revision) {
         clearTimeout(S.syncTimer);

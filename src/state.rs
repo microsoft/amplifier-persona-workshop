@@ -22,6 +22,8 @@ pub fn now_ms() -> i64 {
         .as_millis() as i64
 }
 pub struct AppState {
+    pub update_shutdown: Arc<tokio::sync::Notify>,
+    pub update_shutdown_available: std::sync::atomic::AtomicBool,
     pub home: PathBuf,
     pub config: Config,
     pub db: Mutex<Connection>,
@@ -69,6 +71,8 @@ impl AppState {
             ],
         )?;
         Ok(Arc::new(Self {
+            update_shutdown: Arc::new(tokio::sync::Notify::new()),
+            update_shutdown_available: std::sync::atomic::AtomicBool::new(false),
             home,
             config,
             db: Mutex::new(db),

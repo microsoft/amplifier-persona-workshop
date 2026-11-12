@@ -186,3 +186,20 @@ installation proof for the native launcher/CLI, not authentication or access.
 HTTPS deployments do not expose it. Shared cryptographic primitives live in the
 [umbrella native-platform crate](https://github.com/microsoft/amplifier-constellation/tree/main/crates/native-platform);
 Persona Workshop owns the HTTP, session, cookie and permission behavior.
+
+### Native app updates
+
+For installation-owned local-password homes, authenticated admin
+`GET /api/v1/desktop/updates` returns support/readiness and the durable current
+operation. `POST` accepts `{action, request_id, plan_id?}` with a UUID request ID
+and `check`, `apply`, `rollback` or `recover`; only `check` omits the exact plan ID.
+The browser uses its existing session and CSRF token. No URL, path or command is
+accepted. Repeating an accepted request returns that request's existing outcome;
+unknown results require status reconciliation, never automatic redispatch.
+
+The installation worker uses fixed `GET .../update-readiness` and
+`POST .../update-stop` with the matching plan ID. Mutating work shares one local
+admission lock with cutover; status and owner sign-in remain available during
+recovery. This panel is private owner UI state, outside the shared view/action
+surface. Local native-package setup and update controls do not grant an ACP
+participant host operations.

@@ -170,3 +170,23 @@ Bundled interpreter archives and distributor notices are pinned by the umbrella'
 The package manifest binds their files and the PDF wheel. Neither modifies the
 system interpreter. Recordings still require an explicitly configured transcription
 provider; missing capabilities are reported rather than downloading a model.
+
+### Update a native installation
+
+Open **App updates** in the workbench, check the published release, then choose
+**Install update**. Existing imports and analysis finish first. This explicit
+control uses the installation's private runtime; it adds no polling service.
+Published GitHub release digests and archive/file hashes select the fixed package for
+this operating system and architecture. Downloaded preview apps remain unsigned
+and unnotarized unless their release states otherwise.
+
+A failed start or health check restores the prior executable and private runtime.
+Projects, evidence, profiles, account, configuration and newer database changes
+are never rolled back. **Recover interrupted update** reconciles a stopped
+worker; an unconfirmed stop preserves the pending state rather than replacing a
+possibly running app. **Restore previous app version** also waits for current
+work. A lost reply is reconciled through status before any explicit retry.
+
+These controls apply to fresh installation-owned native homes. Existing Linux
+service installs and externally managed installations retain their current update
+owner. Installing a native app does not take over those installations.

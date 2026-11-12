@@ -18,6 +18,28 @@ try{
  assert.equal(await page.evaluate(()=>sessionStorage.getItem('persona-workshop-first-account')),null);
  await page.setViewportSize({width:390,height:844});assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1));
  if(process.env.UI_ARTIFACTS)await page.screenshot({path:path.join(process.env.UI_ARTIFACTS,'native-empty-mobile.png')});
+ // Update display and recovery are private UI state, never agent view commands.
+ await page.getByRole('button',{name:'App updates',exact:true}).click();
+ await page.getByRole('heading',{name:'App updates',exact:true}).waitFor();
+ assert.equal(await page.getByRole('button',{name:'Check for an update',exact:true}).count(),1);
+ await page.keyboard.press('Escape');assert.equal(await page.getByRole('heading',{name:'App updates',exact:true}).count(),0);
+ let dispatched=0, originalRequest;
+ await page.route('**/api/v1/desktop/updates',async route=>{
+   if(route.request().method()==='POST'){
+     dispatched++;originalRequest=route.request().postDataJSON();
+     // The action is not sent to the real updater in this browser fixture.
+     await route.abort('connectionfailed');return;
+   }
+   await route.fulfill({contentType:'application/json',body:JSON.stringify({supported:true,current:originalRequest?{id:'fixture-only',state:'ready',version:'0.7.0',request_id:originalRequest.request_id}:null})});
+ });
+ await page.getByRole('button',{name:'App updates',exact:true}).click();
+ await page.getByRole('button',{name:'Check for an update',exact:true}).click();
+ await page.getByText('The request was not confirmed.',{exact:false}).waitFor();
+ await page.getByRole('button',{name:'Refresh status',exact:true}).click();
+ await page.getByText('Ready to install',{exact:false}).waitFor();
+ assert.equal(dispatched,1);assert.equal(await page.evaluate(()=>sessionStorage.getItem('persona-native-update-intent')),null);
+ assert.equal(await page.getByRole('button',{name:'Retry the same request',exact:true}).count(),0);
+ await page.keyboard.press('Escape');
  await page.getByRole('button',{name:/Sign out/}).first().click();await page.getByRole('button',{name:'Sign in',exact:true}).waitFor();await page.getByText('Use the password you chose for this workshop.').waitFor();assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1));
  if(process.env.UI_ARTIFACTS)await page.screenshot({path:path.join(process.env.UI_ARTIFACTS,'native-login-mobile.png')});
  assert.deepEqual(errors,[]);console.log('Native browser: first account, fragment removal, lost committed response, ordinary login, empty workspace, mobile fit and no script errors passed');
