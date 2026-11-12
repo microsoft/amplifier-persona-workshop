@@ -193,7 +193,7 @@ fn verify_profile(home: &Path, execution: &Execution, observation: &Value) -> Re
     Ok(())
 }
 fn verify_startup(home: &Path, svc: &manager::Service, observation: &Value) -> Result<()> {
-    #[cfg(target_os = "linux")]
+    #[cfg(not(target_os = "macos"))]
     let _ = svc;
     let binary = platform::installed_binary(&APPLICATION, home);
     #[cfg(target_os = "linux")]
@@ -675,6 +675,10 @@ fn generation_settled(observed: &Value, current: &Value) -> Result<bool> {
 pub fn start_application(home: &Path, plan: &str, nonce: &str) -> Result<Value> {
     let _guard = lock(home)?;
     let (j, b, app) = launch_intent(home, plan, nonce)?;
+    ensure!(
+        j["launch"]["request_id"] == b.request_id,
+        "The native launch belongs to a different update request"
+    );
     let root = folder(home, plan)?;
     let path = root.join("manager-launch.json");
     let current = manager::snapshot(&app.service)?;
@@ -856,6 +860,63 @@ pub fn observe_application(home: &Path, plan: &str, nonce: &str, pid: u32) -> Re
     Ok(json!({"snapshot":snapshot,"claim":claim}))
 }
 
+// A failed candidate can lose its claim opportunity when rollback changes the
+// phase before its listener opens. The earlier accepted Start's captured native
+// generation can authorize stopping that invocation, never health or a new Start.
+fn captured_stop_generation(
+    root: &Path,
+    plan: &str,
+    request: &str,
+    nonce: &str,
+    service: &manager::Service,
+) -> Result<Value> {
+    let intent = read(&root.join("manager-launch.json"))?;
+    ensure!(
+        intent["plan"] == plan
+            && intent["request"] == request
+            && intent["nonce"] == nonce
+            && intent["service"] == serde_json::to_value(service)?
+            && intent["dispatch"] == "accepted"
+            && !intent["observed_generation"].is_null(),
+        "This stop has no captured native launch generation"
+    );
+    Ok(intent["observed_generation"].clone())
+}
+
+fn require_observed_generation(observed: &Value, current: &Value) -> Result<()> {
+    ensure!(
+        generation(current).as_ref() == Some(observed),
+        "A different or unobserved native application generation is running"
+    );
+    Ok(())
+}
+
+fn stop_request(home: &Path, j: &Value, current: &Binding) -> Result<String> {
+    let request = j["launch"]["request_id"]
+        .as_str()
+        .unwrap_or(&current.request_id);
+    id(request)?;
+    if request != current.request_id {
+        ensure!(
+            j["critical_recovery"] == true,
+            "A different request cannot inherit this native launch"
+        );
+        let prior: Binding = serde_json::from_value(read(
+            &dispatch(home, &current.plan_id, request)?.join("manager.json"),
+        )?)?;
+        ensure!(
+            prior.schema == 1
+                && prior.installation_id == current.installation_id
+                && prior.plan_id == current.plan_id
+                && prior.request_id == request
+                && prior.application.as_ref().map(|x| &x.service)
+                    == current.application.as_ref().map(|x| &x.service),
+            "The inherited native launch belongs to a different installation or profile"
+        );
+    }
+    Ok(request.into())
+}
+
 pub fn authorize_stop(home: &Path, plan: &str, pid: u32) -> Result<Value> {
     let j = job(home, plan)?;
     let b = binding(home, &j)?;
@@ -867,7 +928,24 @@ pub fn authorize_stop(home: &Path, plan: &str, pid: u32) -> Result<Value> {
     {
         b.original_application
     } else if let Some(nonce) = j["launch"]["nonce"].as_str() {
-        read(&folder(home, plan)?.join(format!("manager-claim-{}.json", id(nonce)?)))?["claim"]["application"].clone()
+        let root = folder(home, plan)?;
+        let path = root.join(format!("manager-claim-{}.json", id(nonce)?));
+        if path.try_exists()? {
+            read(&path)?["claim"]["application"].clone()
+        } else {
+            let app = b
+                .application
+                .as_ref()
+                .context("Missing application registration")?;
+            let origin = stop_request(home, &j, &b)?;
+            let observed = captured_stop_generation(&root, plan, &origin, nonce, &app.service)?;
+            let current = manager::snapshot(&app.service)?;
+            verify_profile(home, app, &current)?;
+            require_observed_generation(&observed, &current)?;
+            let identity = process::identity(pid)?.context("Application generation disappeared")?;
+            membership(&identity, &current)?;
+            identity
+        }
     } else {
         b.original_application
     };
@@ -886,6 +964,7 @@ pub fn stop_application(home: &Path, plan: &str, nonce: &str) -> Result<Value> {
         "Application stop is not authorized by this update"
     );
     let b = binding(home, &j)?;
+    let origin = stop_request(home, &j, &b)?;
     let app = b
         .application
         .context("No captured application registration")?;
@@ -893,20 +972,49 @@ pub fn stop_application(home: &Path, plan: &str, nonce: &str) -> Result<Value> {
         j["launch"]["nonce"] == nonce,
         "A different launch owns this stop"
     );
-    let claim = read(&folder(home, plan)?.join(format!("manager-claim-{}.json", id(nonce)?)))?;
+    let root = folder(home, plan)?;
+    let claim_path = root.join(format!("manager-claim-{}.json", id(nonce)?));
+    let claim = if claim_path.try_exists()? {
+        Some(read(&claim_path)?)
+    } else {
+        None
+    };
+    let observed = if claim.is_none() {
+        Some(captured_stop_generation(
+            &root,
+            plan,
+            &origin,
+            nonce,
+            &app.service,
+        )?)
+    } else {
+        None
+    };
     let current = manager::snapshot(&app.service)?;
     verify_profile(home, &app, &current)?;
     if inactive(&current) {
-        ensure!(
-            !process::matches(&claim["claim"]["application"])?,
-            "The claimed application still exists outside the observed manager state"
-        );
+        if let Some(claim) = &claim {
+            ensure!(
+                !process::matches(&claim["claim"]["application"])?,
+                "The claimed application still exists outside the observed manager state"
+            );
+        } else {
+            ensure!(
+                generation_settled(observed.as_ref().unwrap(), &current)?,
+                "The captured native generation has not settled"
+            );
+        }
         return Ok(json!({"status":"inactive"}));
     }
-    ensure!(
-        membership(&claim["claim"]["application"], &current)? == claim["claim"],
-        "A different native application generation is running"
-    );
+    if let Some(claim) = &claim {
+        ensure!(
+            membership(&claim["claim"]["application"], &current)? == claim["claim"],
+            "A different native application generation is running"
+        );
+    } else {
+        require_observed_generation(observed.as_ref().unwrap(), &current)?;
+    }
+    let proof = json!({"claim":claim,"observed_generation":observed});
     let path = folder(home, plan)?.join(format!("manager-stop-{}.json", id(nonce)?));
     if path.exists() {
         return Ok(
@@ -918,7 +1026,7 @@ pub fn stop_application(home: &Path, plan: &str, nonce: &str) -> Result<Value> {
     platform::private_create(
         &path,
         &serde_json::to_vec_pretty(
-            &json!({"state":"issued","nonce":nonce,"before":current,"claim":claim}),
+            &json!({"state":"issued","nonce":nonce,"before":current,"proof":proof}),
         )?,
     )?;
     let outcome = match manager::request_state(&app.service, manager::ServiceAction::Stop, &current)
@@ -928,7 +1036,7 @@ pub fn stop_application(home: &Path, plan: &str, nonce: &str) -> Result<Value> {
     };
     write(
         &path,
-        &json!({"state":outcome["status"],"nonce":nonce,"before":current,"claim":claim,"outcome":outcome}),
+        &json!({"state":outcome["status"],"nonce":nonce,"before":current,"proof":proof,"outcome":outcome}),
     )?;
     Ok(outcome)
 }
@@ -1176,6 +1284,111 @@ pub fn command(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unclaimed_stop_requires_the_exact_accepted_observed_generation() {
+        let temporary = tempfile::tempdir().unwrap();
+        let plan = uuid::Uuid::new_v4().to_string();
+        let request = uuid::Uuid::new_v4().to_string();
+        let nonce = uuid::Uuid::new_v4().to_string();
+        let service = manager::Service {
+            manager: manager::ServiceManager::SystemdUser,
+            name: "fixture.service".into(),
+            definition_path: Some(temporary.path().join("fixture.service")),
+        };
+        let snapshot = json!({"active":true,"transitioning":false,
+            "processes":[{"role":"MainPID","identity":{"pid":42,"start_ticks":"123","boot_id":"fixture"}}],
+            "native":{"InvocationID":"first-generation","instances":null}});
+        let observed = generation(&snapshot).unwrap();
+        let intent = json!({"plan":plan,"request":request,"nonce":nonce,"service":service,
+            "dispatch":"accepted","observed_generation":observed});
+        let path = temporary.path().join("manager-launch.json");
+        write(&path, &intent).unwrap();
+        let evidence =
+            captured_stop_generation(temporary.path(), &plan, &request, &nonce, &service).unwrap();
+        require_observed_generation(&evidence, &snapshot).unwrap();
+        // A health claim is neither required nor manufactured by stop evidence.
+        assert!(
+            !temporary
+                .path()
+                .join(format!("manager-claim-{nonce}.json"))
+                .exists()
+        );
+        for (key, value) in [
+            ("dispatch", json!("unknown")),
+            ("observed_generation", Value::Null),
+            ("nonce", json!(uuid::Uuid::new_v4().to_string())),
+            ("request", json!(uuid::Uuid::new_v4().to_string())),
+        ] {
+            let mut changed = intent.clone();
+            changed[key] = value;
+            write(&path, &changed).unwrap();
+            assert!(
+                captured_stop_generation(temporary.path(), &plan, &request, &nonce, &service)
+                    .is_err()
+            );
+        }
+        let mut other = snapshot.clone();
+        other["native"]["InvocationID"] = json!("later-generation");
+        assert!(require_observed_generation(&evidence, &other).is_err());
+        other = snapshot.clone();
+        other["processes"][0]["identity"]["start_ticks"] = json!("456");
+        assert!(require_observed_generation(&evidence, &other).is_err());
+        other = snapshot;
+        other["active"] = json!(false);
+        other["processes"] = json!([]);
+        assert!(require_observed_generation(&evidence, &other).is_err());
+    }
+
+    #[test]
+    fn critical_recovery_preserves_only_the_original_bound_launch_request() {
+        let temporary = tempfile::tempdir().unwrap();
+        let plan = uuid::Uuid::new_v4().to_string();
+        let first = uuid::Uuid::new_v4().to_string();
+        let second = uuid::Uuid::new_v4().to_string();
+        let execution = Execution {
+            service: manager::Service {
+                manager: manager::ServiceManager::SystemdUser,
+                name: "fixture.service".into(),
+                definition_path: Some(temporary.path().join("fixture.service")),
+            },
+            profile: None,
+            baseline: Value::Null,
+        };
+        let prior = Binding {
+            schema: 1,
+            installation_id: uuid::Uuid::new_v4().to_string(),
+            plan_id: plan.clone(),
+            request_id: first.clone(),
+            worker: execution.clone(),
+            application: Some(execution),
+            worker_sha256: String::new(),
+            python_sha256: String::new(),
+            control_sha256: String::new(),
+            original_application: Value::Null,
+        };
+        let path = dispatch(temporary.path(), &plan, &first)
+            .unwrap()
+            .join("manager.json");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        write(&path, &prior).unwrap();
+        let mut current = prior.clone();
+        current.request_id = second;
+        let mut job = json!({"critical_recovery":true,"launch":{"request_id":first}});
+        assert_eq!(
+            stop_request(temporary.path(), &job, &current).unwrap(),
+            first
+        );
+        job["critical_recovery"] = json!(false);
+        assert!(stop_request(temporary.path(), &job, &current).is_err());
+        job["critical_recovery"] = json!(true);
+        current.application.as_mut().unwrap().service.name = "another.service".into();
+        assert!(stop_request(temporary.path(), &job, &current).is_err());
+        current = prior;
+        current.request_id = uuid::Uuid::new_v4().to_string();
+        current.installation_id = uuid::Uuid::new_v4().to_string();
+        assert!(stop_request(temporary.path(), &job, &current).is_err());
+    }
 
     #[test]
     fn accepted_but_unobserved_start_cannot_consume_a_new_nonce() {

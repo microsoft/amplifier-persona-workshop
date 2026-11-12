@@ -255,7 +255,8 @@ class Worker:
         self.manager('stopped')
         nonce=str(uuid.uuid4());expected=self.job['binary_sha256' if mode=='candidate' else 'previous_sha256']
         if digest(self.binary)!=expected:raise RuntimeError('replacement_launch_bytes_changed')
-        self.save(launch={'nonce':nonce,'mode':mode,'binary_sha256':expected})
+        request=str(uuid.UUID(self.job.get('worker_request_id',self.job['request_id'])))
+        self.save(launch={'nonce':nonce,'mode':mode,'binary_sha256':expected,'request_id':request})
         outcome=self.manager('start',nonce=nonce)
         if outcome.get('status')!='accepted':raise RuntimeError('replacement_native_start_'+str(outcome.get('status','unknown')))
     def health(self,expected):

@@ -12,7 +12,7 @@ class NativeUpdateTests(unittest.TestCase):
   self.root=self.home/'native-updates';self.folder=self.root/self.id;self.folder.mkdir(parents=True);(self.home/'bin').mkdir();(self.home/'secrets').mkdir();(self.home/'runtime').mkdir()
   self.binary=self.home/'bin'/('persona-workshop.exe' if os.name=='nt' else 'persona-workshop');self.binary.write_bytes(b'original')
   u.write(self.home/'config.json',{'id':self.agent,'auth_mode':'local-password','web_transport':'local-http','public_url':'http://127.0.0.1:1','port':1})
-  u.write(self.home/'native-installation.json',{'id':self.agent,'update_owner':'installation'});u.write(self.root/'active.json',{'id':self.id});u.write(self.folder/'plan.json',{'id':self.id,'state':'ready','action':'apply'})
+  u.write(self.home/'native-installation.json',{'id':self.agent,'update_owner':'installation'});u.write(self.root/'active.json',{'id':self.id});u.write(self.folder/'plan.json',{'id':self.id,'request_id':str(uuid.uuid4()),'state':'ready','action':'apply'})
  def worker(self):return u.Worker(self.home,self.id)
  def test_atomic_write_and_existing_owner_restriction(self):
   self.assertEqual(self.worker().config['id'],self.agent);u.write(self.home/'saved-connections.json',{'url':'https://owner.example'})
@@ -73,6 +73,7 @@ class NativeUpdateTests(unittest.TestCase):
   with patch.object(worker,'manager',side_effect=manager),patch.object(u.subprocess,'Popen') as child:
    worker.start();child.assert_not_called()
   self.assertEqual(len(launches),1)
+  self.assertEqual(worker.job['launch']['request_id'],worker.job['request_id'])
  def test_unresolved_previous_start_cannot_even_write_a_new_nonce(self):
   worker=self.worker();original={'nonce':str(uuid.uuid4()),'mode':'candidate'};worker.save('verifying',binary_sha256=u.digest(self.binary),launch=original)
   before=worker.file.read_bytes()
