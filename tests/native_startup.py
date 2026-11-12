@@ -80,7 +80,10 @@ $v = @{xml=[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($t.Xml));sid
             powershell = Path(os.environ['SystemRoot']) / 'System32/WindowsPowerShell/v1.0/powershell.exe'
             checked([str(powershell), '-NoProfile', '-NonInteractive', '-File', str(script)], env=env)
             value = json.loads(output.read_text(encoding='utf-8'))
-            xml = ET.fromstring(base64.b64decode(value['xml']))
+            # COM returns a Unicode BSTR whose XML declaration still says UTF-16.
+            # Our transport explicitly encodes it as UTF-8; decode that transport
+            # before passing Unicode (not mislabeled bytes) to the XML parser.
+            xml = ET.fromstring(base64.b64decode(value['xml']).decode('utf-8'))
             ns = {'t': 'http://schemas.microsoft.com/windows/2004/02/mit/task'}
             actions = xml.findall('./t:Actions/t:Exec', ns)
             principals = xml.findall('./t:Principals/t:Principal', ns)
@@ -285,11 +288,13 @@ def run(package, result):
             assert all((home / name).read_bytes() == data for name, data in preserved.items())
             stop(process)
         finally:
-            for process in processes:
-                stop(process)
-            if registration is not None and not removed:
-                registration.emergency_remove()
-            log.close()
+            try:
+                for process in processes:
+                    stop(process)
+                if registration is not None and not removed:
+                    registration.emergency_remove()
+            finally:
+                log.close()
         report = {'passed': True, 'platform': sys.platform, 'package_sha256': hashlib.sha256(package.read_bytes()).hexdigest(), 'checks': checks, 'registration': registration.snapshot, 'cleanup': 'exact UUID registration removed; all fixture processes stopped', 'limits': ['OS manager launch exercised without logging the runner out and in', 'Windows CI runners are recorded by workflow; no claim of every supported OS version', 'No model/provider, production installation or publisher signing operation']}
     result.parent.mkdir(parents=True, exist_ok=True)
     result.write_text(json.dumps(report, indent=2) + '\n', encoding='utf-8')
