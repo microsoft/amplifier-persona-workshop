@@ -79,6 +79,43 @@ class NativeUpdateTests(unittest.TestCase):
   before=worker.file.read_bytes()
   with patch.object(worker,'manager',side_effect=RuntimeError('prior generation unobserved')),self.assertRaisesRegex(RuntimeError,'unobserved'):worker.start()
   self.assertEqual(worker.file.read_bytes(),before)
+ def test_unknown_start_observes_only_its_original_intent_until_exact_claim(self):
+  worker=self.worker();worker.save('verifying',binary_sha256=u.digest(self.binary));calls=[];observed=[]
+  def manager(operation,**kwargs):
+   calls.append(operation)
+   if operation=='stopped':return {'inactive':True}
+   if operation=='start':return {'status':'unknown','code':'transport_unknown'}
+   self.assertEqual(operation,'observe');observed.append(kwargs)
+   self.assertEqual(worker.job['state'],'verifying')
+   if len(observed)==1:raise RuntimeError('Exact native claim not observed yet')
+   return {'observed':True}
+  with patch.object(worker,'manager',side_effect=manager):
+   worker.start();launch=dict(worker.job['launch'])
+   with patch.object(u.subprocess,'check_output',return_value='persona-workshop 0.7.2'),patch.object(worker,'api',return_value={'id':self.agent,'version':'0.7.2','pid':42}),patch.object(u.time,'sleep'):
+    worker.health(u.digest(self.binary))
+  self.assertEqual(calls,['stopped','start','observe','observe'])
+  self.assertEqual(worker.job['launch'],launch)
+  self.assertTrue(all(item=={'nonce':launch['nonce'],'pid':42} for item in observed))
+ def test_unknown_start_without_bound_claim_cannot_replace_or_retry(self):
+  worker=self.worker();worker.save('verifying',binary_sha256=u.digest(self.binary));calls=[]
+  def manager(operation,**kwargs):
+   calls.append(operation)
+   if operation=='stopped' and calls==['stopped']:return {'inactive':True}
+   if operation=='start':return {'status':'unknown','code':'transport_unknown'}
+   raise RuntimeError('native generation unbound')
+  with patch.object(worker,'manager',side_effect=manager):
+   worker.start();launch=dict(worker.job['launch'])
+   with patch.object(u.subprocess,'check_output',return_value='persona-workshop 0.7.2'),patch.object(worker,'api',return_value={'id':self.agent,'version':'0.7.2','pid':42}),patch.object(u.time,'monotonic',side_effect=[0,1,61]),patch.object(u.time,'sleep'),self.assertRaisesRegex(RuntimeError,'candidate_health_failed'):
+    worker.health(u.digest(self.binary))
+   with patch.object(worker,'stop',side_effect=ConnectionRefusedError()),patch.object(worker,'replace') as replace,self.assertRaisesRegex(RuntimeError,'unbound'):
+    worker.rollback('health_unconfirmed')
+   replace.assert_not_called()
+  self.assertEqual(calls.count('start'),1)
+  self.assertEqual(worker.job['launch'],launch)
+ def test_refused_and_malformed_start_do_not_enter_health_observation(self):
+  for outcome in [{'status':'refused'}, {'status':'unexpected'}, [], None]:
+   worker=self.worker();worker.save('verifying',binary_sha256=u.digest(self.binary))
+   with patch.object(worker,'manager',side_effect=[{'inactive':True},outcome]),self.assertRaisesRegex(RuntimeError,'replacement_native_start_'):worker.start()
  def test_replace_keeps_other_installation_state_and_recovers_missing_runtime_dir(self):
   (self.home/'secrets/token').write_bytes(b'private');(self.home/'runtime/old').write_bytes(b'old');candidate=self.folder/'binary';candidate.write_bytes(b'new');runtime=self.folder/'new-runtime';runtime.mkdir();(runtime/'new').write_bytes(b'new-runtime')
   self.worker().replace(candidate,runtime);self.assertEqual(self.binary.read_bytes(),b'new');self.assertEqual((self.home/'runtime/new').read_bytes(),b'new-runtime');self.assertEqual((self.home/'secrets/token').read_bytes(),b'private')

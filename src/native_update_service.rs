@@ -19,6 +19,14 @@ struct Execution {
     service: manager::Service,
     profile: Option<registration::Registration>,
     baseline: Value,
+    #[serde(default)]
+    startup_home: Option<StartupHome>,
+}
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct StartupHome {
+    spelling: PathBuf,
+    canonical: PathBuf,
 }
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -188,7 +196,20 @@ fn verify_profile(home: &Path, execution: &Execution, observation: &Value) -> Re
             "Native profile changed"
         );
     } else {
-        verify_startup(home, &execution.service, observation)?;
+        let spelling = if let Some(captured) = &execution.startup_home {
+            ensure!(
+                fs::canonicalize(home)? == captured.canonical
+                    && fs::canonicalize(&captured.spelling)? == captured.canonical,
+                "Existing Persona startup names a different installation"
+            );
+            &captured.spelling
+        } else {
+            home
+        };
+        // The worker resolves its home, while an existing startup definition
+        // can retain a valid alias such as macOS /var. Preserve its verified
+        // spelling; neither the saved definition nor its ownership is relaxed.
+        verify_startup(spelling, &execution.service, observation)?;
     }
     Ok(())
 }
@@ -274,6 +295,7 @@ fn registered(
         service: svc.clone(),
         profile: Some(profile.clone()),
         baseline,
+        startup_home: None,
     })
 }
 fn application(home: &Path, installation_id: &str) -> Result<Execution> {
@@ -294,6 +316,10 @@ fn application(home: &Path, installation_id: &str) -> Result<Execution> {
             service: startup,
             profile: None,
             baseline,
+            startup_home: Some(StartupHome {
+                spelling: home.to_owned(),
+                canonical: fs::canonicalize(home)?,
+            }),
         };
         verify_profile(home, &execution, &execution.baseline)?;
         return Ok(execution);
@@ -319,6 +345,7 @@ fn application(home: &Path, installation_id: &str) -> Result<Execution> {
         service: svc,
         profile: Some(profile),
         baseline: Value::Null,
+        startup_home: None,
     })
 }
 
@@ -399,6 +426,7 @@ pub fn prepare(home: &Path, plan: &str) -> Result<()> {
             service: worker_service,
             profile: Some(profile),
             baseline: Value::Null,
+            startup_home: None,
         };
         let status = tokio::runtime::Handle::try_current()?
             .block_on(crate::desktop::local_api(home, "GET", "status", None));
@@ -1285,6 +1313,54 @@ pub fn command(
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
+    #[test]
+    fn existing_startup_preserves_its_original_home_spelling() {
+        let temporary = tempfile::tempdir().unwrap();
+        let original = temporary.path().join("original");
+        fs::create_dir(&original).unwrap();
+        let alias = temporary.path().join("alias");
+        std::os::unix::fs::symlink(&original, &alias).unwrap();
+        let home = alias.join("installation");
+        fs::create_dir(&home).unwrap();
+        let resolved = fs::canonicalize(&home).unwrap();
+        assert_ne!(home, resolved);
+        let svc = service(&home, "persona-workshop-fixture".into()).unwrap();
+        let binary = platform::installed_binary(&APPLICATION, &home);
+        #[cfg(target_os = "linux")]
+        let definition = platform::systemd_unit(&APPLICATION, &binary, &home).unwrap();
+        #[cfg(target_os = "macos")]
+        let definition = platform::launch_agent(&APPLICATION, &svc.name, &binary, &home).unwrap();
+        let observation = json!({"definition":{"bytes":definition.as_bytes()},
+            "definition_matches":true,"start_allowed":true,"masked":false,
+            "native":{"DropInPaths":""}});
+        let execution = Execution {
+            service: svc,
+            profile: None,
+            baseline: observation.clone(),
+            startup_home: Some(StartupHome {
+                spelling: home.clone(),
+                canonical: resolved.clone(),
+            }),
+        };
+        verify_profile(&home, &execution, &observation).unwrap();
+        // The worker resolves a valid alias. The saved startup definition and
+        // the installation it names have not changed.
+        verify_profile(&resolved, &execution, &observation).unwrap();
+        let mut changed = observation.clone();
+        changed["definition"]["bytes"] = json!(b"changed definition");
+        assert!(verify_profile(&resolved, &execution, &changed).is_err());
+        let elsewhere = temporary.path().join("elsewhere");
+        fs::create_dir(&elsewhere).unwrap();
+        assert!(verify_profile(&elsewhere, &execution, &observation).is_err());
+        // Retargeting the original alias must not authorize another home even
+        // though its old startup bytes still compare exactly.
+        fs::remove_file(&alias).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, &alias).unwrap();
+        fs::create_dir(alias.join("installation")).unwrap();
+        assert!(verify_profile(&resolved, &execution, &observation).is_err());
+    }
+
     #[test]
     fn unclaimed_stop_requires_the_exact_accepted_observed_generation() {
         let temporary = tempfile::tempdir().unwrap();
@@ -1354,6 +1430,7 @@ mod tests {
             },
             profile: None,
             baseline: Value::Null,
+            startup_home: None,
         };
         let prior = Binding {
             schema: 1,

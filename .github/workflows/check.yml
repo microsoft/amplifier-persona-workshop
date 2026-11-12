@@ -88,9 +88,13 @@ jobs:
           python tests/native_startup.py --package "$package" --result dist/native-startup-${{ matrix.target }}.json
       - name: Actual packaged update and binary-only recovery
         run: |
+          cargo +1.93.0 build --release --locked --example native_fixture_storage
+          helper="target/${{ matrix.target }}/release/examples/native_fixture_storage"
+          if [[ "${{ runner.os }}" == Windows ]]; then helper="$helper.exe"; fi
+          python -c 'import hashlib,json,pathlib,shutil,subprocess,sys; p=pathlib.Path(sys.argv[1]); d=pathlib.Path("fixture-dist"); d.mkdir(); shutil.copy2(p,d/p.name); source=pathlib.Path("examples/native_fixture_storage.rs"); (d/"native-fixture-storage.json").write_text(json.dumps({"consumer_artifact":False,"target":sys.argv[2],"source":subprocess.check_output(["git","rev-parse","HEAD"],text=True).strip(),"source_sha256":hashlib.sha256(source.read_bytes()).hexdigest(),"name":p.name,"sha256":hashlib.sha256(p.read_bytes()).hexdigest(),"size":p.stat().st_size},indent=2)+"\n")' "$helper" "${{ matrix.target }}"
           package=$(python -c 'import pathlib; print(next(p for p in pathlib.Path("dist").iterdir() if p.name.endswith((".zip", ".tar.gz"))))')
-          python tests/native_update_process.py --package "$package" --result dist/native-update-${{ matrix.target }}.json
-          python tests/native_update_process.py --package "$package" --managed --result dist/native-managed-update-${{ matrix.target }}.json
+          python tests/native_update_process.py --package "$package" --storage-helper "$helper" --result dist/native-update-${{ matrix.target }}.json
+          python tests/native_update_process.py --package "$package" --storage-helper "$helper" --managed --result dist/native-managed-update-${{ matrix.target }}.json
       - uses: actions/setup-node@v4
         if: matrix.target == 'x86_64-unknown-linux-gnu'
         with:
@@ -110,6 +114,12 @@ jobs:
           node tests/native-update-offer-browser.mjs
           package=$(python -c 'import pathlib; print(next(p for p in pathlib.Path("dist").iterdir() if p.name.endswith(".tar.gz")))')
           python tests/native_launch.py --package "$package" --browser --result dist/native-browser.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: native-persona-fixture-${{ matrix.target }}
+          path: fixture-dist/*
+          if-no-files-found: ignore
       - uses: actions/upload-artifact@v4
         if: failure()
         with:

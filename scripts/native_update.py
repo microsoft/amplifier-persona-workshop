@@ -258,7 +258,12 @@ class Worker:
         request=str(uuid.UUID(self.job.get('worker_request_id',self.job['request_id'])))
         self.save(launch={'nonce':nonce,'mode':mode,'binary_sha256':expected,'request_id':request})
         outcome=self.manager('start',nonce=nonce)
-        if outcome.get('status')!='accepted':raise RuntimeError('replacement_native_start_'+str(outcome.get('status','unknown')))
+        status=outcome.get('status') if isinstance(outcome,dict) else None
+        if status not in ('accepted','unknown'):raise RuntimeError('replacement_native_start_'+str(status or 'malformed'))
+        # A manager timeout does not cancel its one dispatched Start. Keep this
+        # exact nonce/phase open for the existing bounded health observation;
+        # only an authenticated app with its matching native claim can pass.
+        # The recorded native outcome stays unknown, and Start is never resent.
     def health(self,expected):
         expected_version=subprocess.check_output([str(self.binary),'--version'],text=True,timeout=15).strip().split()[-1]
         deadline=time.monotonic()+60
