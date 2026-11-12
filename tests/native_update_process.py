@@ -14,6 +14,15 @@ def database(path):
   with db: yield db
  finally: db.close()
 
+@contextlib.contextmanager
+def retained_fixture():
+ root=Path(tempfile.mkdtemp(prefix='Persona update café 子 '))
+ try:yield str(root)
+ except BaseException:
+  print('Retained failed fixture for exact lifetime/cleanup inspection: '+str(root),flush=True)
+  raise
+ else:shutil.rmtree(root)
+
 
 class ActualWorker:
  """Hold the OS process identity of this plan's actual packaged interpreter."""
@@ -64,15 +73,18 @@ class ActualWorker:
     except (BlockingIOError,PermissionError):time.sleep(.1)
    raise AssertionError('Update worker still owns its operation')
 
-def run(package,result):
- checks=[];observations=[];actual_worker=None;worker_deadline=None
- with tempfile.TemporaryDirectory(prefix='Persona update café 子 ') as temp:
+def run(package,result,managed=False):
+ checks=[];observations=[];actual_worker=None;worker_deadline=None;registration=None
+ with retained_fixture() as temp:
   root=Path(temp);bundle=root/'download';bundle.mkdir();launcher.extract(package,bundle)
   binary=next(p for p in bundle.rglob('persona-workshop.exe' if os.name=='nt' else 'persona-workshop') if p.is_file());home=root/'installation';log=open(root/'server.log','ab')
   proc=subprocess.Popen([str(binary),'--home',str(home),'--no-browser'],stdin=subprocess.DEVNULL,stdout=log,stderr=log)
   current=None
   try:
-   for _ in range(400):
+   # First installation verifies and durably copies the complete private
+   # runtime. Match the bounded full-package setup budget; update/stop waits
+   # below keep their separate existing bounds.
+   for _ in range(1800):
     try:
      base=json.loads((home/'runtime.json').read_text(encoding='utf-8'))['url']
      if launcher.request(base,'/auth/session')[0]==200:break
@@ -81,7 +93,21 @@ def run(package,result):
     time.sleep(.1)
    else:raise AssertionError('Fixture workshop did not start')
    config_bytes=(home/'config.json').read_bytes();config=json.loads(config_bytes);cap=worker.read(home/'secrets/first-account.json')['token']
-   assert launcher.request(base,'/auth/first-account',{'setup_token':cap,'password':'Disposable update password','start_at_signin':False})[0]==200
+   assert launcher.request(base,'/auth/first-account',{'setup_token':cap,'password':'Disposable update password','start_at_signin':managed})[0]==200
+   if managed:
+    from native_startup import Registration
+    registration=Registration(root,home,config['id']);registration.read()
+    first_pid=current_pid=launcher.request(base,'/api/v1/status',headers={'Authorization':'Bearer '+(home/'secrets/control-token').read_text().strip()})[2]['pid']
+    proc.terminate();proc.wait(timeout=20);registration.start()
+    deadline=time.monotonic()+40
+    while time.monotonic()<deadline:
+     try:
+      status=launcher.request(base,'/api/v1/status',headers={'Authorization':'Bearer '+(home/'secrets/control-token').read_text().strip()})[2]
+      if status.get('pid')!=first_pid and status.get('id')==config['id']:break
+     except (OSError,ValueError):pass
+     time.sleep(.1)
+    else:raise AssertionError('OS-managed original app did not start')
+    registration.bind_process(status['pid']);checks.append('original application launched by its exact current-user OS registration')
    secret_before=worker.digest(home/'secrets/local-password.json');identity_before=config['id'];private_before=worker.digest(home/'secrets/control-token')
    # A new queued source may arrive during installation. It must never be rewound.
    with database(home/'state.sqlite3') as db:db.execute("INSERT INTO audit(at,kind,project_id,data) VALUES(1,'native-fixture',NULL,'{\"value\":1}')")
@@ -90,11 +116,27 @@ def run(package,result):
     expected_value[0]+=1
     with database(home/'state.sqlite3') as db:db.execute("UPDATE audit SET data=? WHERE kind='native-fixture'",(json.dumps({'value':expected_value[0]},separators=(',',':')),))
    original_binary=home/'bin'/binary.name
+   updates=home/'native-updates';updates.mkdir(mode=0o700,exist_ok=True)
+   def manager(identifier,operation):
+    return json.loads(subprocess.check_output([str(original_binary),'--home',str(home),'native-update-manager',identifier,operation],stderr=subprocess.PIPE,timeout=90))
+   def prepare_direct(identifier,job):
+    folder=updates/identifier;job.update(request_id=str(uuid.uuid4()),state='queued');worker.write(folder/'plan.json',job)
+    shutil.copytree(home/'runtime',folder/'worker-runtime');shutil.copyfile(ROOT/'scripts/native_update.py',folder/'worker.py')
+    manager(identifier,'prepare')
+   def retire_worker(identifier):
+    deadline=time.monotonic()+20
+    while time.monotonic()<deadline:
+     value=manager(identifier,'retire-worker')
+     if value.get('unresolved'):raise AssertionError('Native worker retirement remained unknown: '+json.dumps(value))
+     if not value.get('waiting_for_exit'):return value
+     time.sleep(.2)
+    raise AssertionError('Native worker did not finish exiting')
    for fail in [None,"health","start"]:
-    identifier=str(uuid.uuid4());folder=home/'native-updates'/identifier;folder.mkdir(parents=True)
+    identifier=str(uuid.uuid4());folder=home/'native-updates'/identifier;folder.mkdir(mode=0o700)
     shutil.copytree(bundle,folder/'candidate');entry=binary.relative_to(bundle).as_posix()
     job={'schema':1,'id':identifier,'state':'ready','action':'apply','entry':entry,'binary_sha256':worker.digest(binary),'installed_sha256':worker.digest(original_binary),'config_sha256':worker.digest(home/'config.json'),'version':subprocess.check_output([str(binary),'--version'],text=True).strip().split()[-1],'release_url':'https://example.invalid/disposable-fixture'}
     worker.write(folder/'plan.json',job);worker.write(home/'native-updates/active.json',{'id':identifier})
+    if fail is not None:prepare_direct(identifier,job)
     current=worker.Worker(home,identifier)
     real_health=current.health;health_calls=[]
     if fail=="health":
@@ -153,21 +195,28 @@ def run(package,result):
     assert current.api('status')['id']==identity_before
     with database(home/'state.sqlite3') as db:assert db.execute("SELECT data FROM audit WHERE kind='native-fixture'").fetchone()==(json.dumps({'value':expected_value[0]},separators=(',',':')),)
     assert not (home/'updates/drain.json').exists()
+    retire_worker(identifier)
+    if registration is not None:registration.read()
+    # The application must remain available after the separate worker retires.
+    assert current.api('status')['id']==identity_before
    checks.append('identity/config/credentials/DB evidence unchanged; no database rewind')
    # A stop failure with the actual server still holding its lock cannot replace anything.
-   identifier=str(uuid.uuid4());folder=home/'native-updates'/identifier;folder.mkdir();shutil.copytree(bundle,folder/'candidate');job.update(id=identifier,state='ready',installed_sha256=worker.digest(original_binary),config_sha256=worker.digest(home/'config.json'));worker.write(folder/'plan.json',job);worker.write(home/'native-updates/active.json',{'id':identifier});current=worker.Worker(home,identifier)
+   identifier=str(uuid.uuid4());folder=home/'native-updates'/identifier;folder.mkdir(mode=0o700);shutil.copytree(bundle,folder/'candidate');job.update(id=identifier,state='ready',installed_sha256=worker.digest(original_binary),config_sha256=worker.digest(home/'config.json'));worker.write(folder/'plan.json',job);worker.write(home/'native-updates/active.json',{'id':identifier});prepare_direct(identifier,job);current=worker.Worker(home,identifier)
    before=worker.digest(original_binary);current.stop=lambda:(_ for _ in ()).throw(RuntimeError('injected unknown stop'))
    current.execute();assert worker.read(folder/'plan.json')['state']=='recovery_required';assert worker.digest(original_binary)==before;assert current.api('status')['id']==identity_before;checks.append('unknown stop never replaces a running service or rewinds state')
   finally:
    if actual_worker is not None:actual_worker.wait(worker_deadline)
    if current:
     current=worker.Worker(home,current.id);current.save('rolling_back')
-    try:current.stop()
-    except Exception:pass
+    current.stop()
+    current.save('failed',reason='fixture_cleanup_after_retained_unknown_stop')
+    retired=manager(current.id,'retire-runtime')
+    assert not retired.get('waiting_for_exit') and not retired.get('unresolved'),retired
+   if registration is not None:registration.emergency_remove()
    if proc.poll() is None:proc.terminate()
    proc.wait(timeout=20);log.close()
- receipt={'passed':True,'checks':checks,'status_api_observations':observations,'worker_exit':('exact Windows process handle' if os.name=='nt' else 'same worker operation lock released'),'package_sha256':hashlib.sha256(package.read_bytes()).hexdigest(),'limits':['Release download represented by local exact bundle; GitHub digest selection separately tested','No model/provider, project analysis or startup registration']}
+ receipt={'passed':True,'managed_original':managed,'checks':checks,'status_api_observations':observations,'worker_exit':('exact Windows process handle' if os.name=='nt' else 'same worker operation lock released'),'package_sha256':hashlib.sha256(package.read_bytes()).hexdigest(),'limits':['Release download represented by local exact bundle; GitHub digest selection separately tested','No model/provider or project analysis; only captured fresh UUID registrations']}
  if result:result.write_text(json.dumps(receipt,indent=2)+'\n')
  print(json.dumps(receipt,indent=2))
 if __name__=='__main__':
- p=argparse.ArgumentParser();p.add_argument('--package',type=Path,required=True);p.add_argument('--result',type=Path);a=p.parse_args();run(a.package.resolve(),a.result)
+ p=argparse.ArgumentParser();p.add_argument('--package',type=Path,required=True);p.add_argument('--result',type=Path);p.add_argument('--managed',action='store_true');a=p.parse_args();run(a.package.resolve(),a.result,a.managed)

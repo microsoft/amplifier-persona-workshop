@@ -38,6 +38,16 @@ enum Action {
         extractor_config: Option<PathBuf>,
     },
     Serve,
+    #[command(hide = true)]
+    NativeUpdateManager {
+        plan: uuid::Uuid,
+        #[arg(value_parser = ["prepare", "start", "observe", "authorize-stop", "stop", "stopped", "retire-worker", "retire-runtime"])]
+        operation: String,
+        #[arg(long)]
+        nonce: Option<uuid::Uuid>,
+        #[arg(long)]
+        pid: Option<u32>,
+    },
     Status,
     Api {
         method: String,
@@ -110,6 +120,25 @@ async fn run(cli: Cli) -> Result<()> {
         return persona_workshop::desktop::launch(home, !cli.no_browser).await;
     };
     match action {
+        Action::NativeUpdateManager {
+            plan,
+            operation,
+            nonce,
+            pid,
+        } => {
+            let nonce = nonce.map(|v| v.to_string());
+            let result = tokio::task::spawn_blocking(move || {
+                persona_workshop::native_update_service::command(
+                    &home,
+                    &plan.to_string(),
+                    &operation,
+                    nonce.as_deref(),
+                    pid,
+                )
+            })
+            .await??;
+            println!("{}", result);
+        }
         Action::Init {
             owner,
             bind,

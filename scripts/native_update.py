@@ -207,15 +207,30 @@ class Worker:
         result=subprocess.run([str(binary),'--version'],capture_output=True,text=True,timeout=15)
         if result.returncode or result.stdout.strip()!='persona-workshop '+version:raise RuntimeError('candidate_version_mismatch')
         self.save('ready',version=version,tag=release['tag_name'],release_id=release['id'],release_url=release['html_url'],archive_sha256=digest(archive),entry=metadata['entry'],binary_sha256=metadata['binary_sha256'],installed_sha256=digest(self.binary),config_sha256=digest(self.home/'config.json'),up_to_date=digest(self.binary)==metadata['binary_sha256'])
+    def manager(self,operation,nonce=None,pid=None):
+        request=str(uuid.UUID(self.job['request_id']))
+        selected=read(self.file)
+        if selected.get('request_id')!=request:raise RuntimeError('update_request_superseded')
+        directory=self.folder/'dispatch'/request
+        binding=read(directory/'manager.json')
+        control=directory/('manager-control.exe' if os.name=='nt' else 'manager-control')
+        if binding.get('request_id')!=request or binding.get('plan_id')!=self.id or digest(control)!=binding['control_sha256']:raise RuntimeError('fixed_update_controller_changed')
+        args=[str(control),'--home',str(self.home),'native-update-manager',self.id,operation]
+        if nonce is not None:args+=['--nonce',str(uuid.UUID(nonce))]
+        if pid is not None:args+=['--pid',str(pid)]
+        completed=subprocess.run(args,stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=90,cwd=self.home)
+        if completed.returncode:raise RuntimeError('native_'+operation+'_unconfirmed: '+completed.stderr.decode('utf-8','replace')[-2000:])
+        return json.loads(completed.stdout)
     def stop(self):
         handle=None
+        pid=self.api('status').get('pid')
+        if not isinstance(pid,int) or not 0<pid<2**32:raise RuntimeError('service_process_unknown')
+        self.manager('authorize-stop',pid=pid)
         if os.name=='nt':
-            # Hold the actual authenticated service process before requesting exit.
-            # Its lock can release before Windows unloads its executable/DLLs.
+            # Hold the actual authenticated application, not its Task Scheduler
+            # engine, until Windows has unloaded its executable and DLLs.
             import ctypes as c
             from ctypes import wintypes as w
-            pid=self.api('status').get('pid')
-            if not isinstance(pid,int) or not 0<pid<2**32:raise RuntimeError('service_process_unknown')
             kernel=c.WinDLL('kernel32',use_last_error=True)
             kernel.OpenProcess.argtypes=[w.DWORD,w.BOOL,w.DWORD];kernel.OpenProcess.restype=w.HANDLE
             kernel.WaitForSingleObject.argtypes=[w.HANDLE,w.DWORD];kernel.WaitForSingleObject.restype=w.DWORD
@@ -228,7 +243,8 @@ class Worker:
             deadline=time.monotonic()+20
             while time.monotonic()<deadline:
                 try:
-                    with locked(self.home/'service.lock',False):return
+                    with locked(self.home/'service.lock',False):
+                        self.manager('stopped');return
                 except OSError:time.sleep(.1)
             raise RuntimeError('service_did_not_stop')
         finally:
@@ -236,15 +252,12 @@ class Worker:
     def start(self):
         mode={'verifying':'candidate','rolling_back':'rollback'}.get(self.job['state'])
         if mode is None:raise RuntimeError('replacement_launch_phase_invalid')
+        self.manager('stopped')
         nonce=str(uuid.uuid4());expected=self.job['binary_sha256' if mode=='candidate' else 'previous_sha256']
         if digest(self.binary)!=expected:raise RuntimeError('replacement_launch_bytes_changed')
         self.save(launch={'nonce':nonce,'mode':mode,'binary_sha256':expected})
-        env={**os.environ,'PERSONA_UPDATE_PLAN':self.id,'PERSONA_UPDATE_LAUNCH':nonce}
-        kwargs={'stdin':subprocess.DEVNULL,'stdout':subprocess.DEVNULL,'stderr':subprocess.DEVNULL,'env':env}
-        if os.name=='nt':kwargs['creationflags']=subprocess.CREATE_NO_WINDOW|subprocess.CREATE_NEW_PROCESS_GROUP
-        else:kwargs['start_new_session']=True
-        self.started_process=subprocess.Popen([str(self.binary),'--home',str(self.home),'serve'],**kwargs)
-        self.started_pid=self.started_process.pid
+        outcome=self.manager('start',nonce=nonce)
+        if outcome.get('status')!='accepted':raise RuntimeError('replacement_native_start_'+str(outcome.get('status','unknown')))
     def health(self,expected):
         expected_version=subprocess.check_output([str(self.binary),'--version'],text=True,timeout=15).strip().split()[-1]
         deadline=time.monotonic()+60
@@ -252,7 +265,8 @@ class Worker:
             self.gate()
             try:
                 result=self.api('status')
-                if digest(self.binary)==expected and result['id']==self.config['id'] and result.get('version')==expected_version and result.get('pid')==self.started_pid:return
+                if digest(self.binary)==expected and result['id']==self.config['id'] and result.get('version')==expected_version:
+                    self.manager('observe',nonce=self.job['launch']['nonce'],pid=result['pid']);return
             except Exception:pass
             time.sleep(.3)
         raise RuntimeError('candidate_health_failed')
@@ -270,22 +284,18 @@ class Worker:
         if (self.home/'runtime').exists():durable_replace(self.home/'runtime',runtime_old)
         durable_replace(runtime_next,self.home/'runtime')
     def rollback(self,reason):
-        # Supersede a candidate whose Popen may have completed before worker loss.
-        self.save('rolling_back',reason=reason,launch=None);self.gate()
+        # Keep the earlier nonce until its actual native generation is settled.
+        # Neither an empty snapshot nor a released lock cancels a delayed Start.
+        self.save('rolling_back',reason=reason);self.gate()
         try:self.stop()
         except (OSError,RuntimeError):
-            # Our candidate may own the lock before its API is listening. Reconcile
-            # that same known child briefly; never terminate or replace an unknown process.
-            child=getattr(self,'started_process',None)
-            deadline=time.monotonic()+10
-            while child is not None and child.poll() is None and time.monotonic()<deadline:
-                try:self.stop()
-                except (OSError,RuntimeError):pass
-                if child.poll() is None:time.sleep(.1)
-            if child is not None and child.poll() is None:
-                raise RuntimeError('candidate_stop_unresolved')
-            # A free lock before the known child starts is not proof it stopped.
+            nonce=(self.job.get('launch') or {}).get('nonce')
+            if nonce:
+                try:self.manager('stop',nonce=nonce)
+                except RuntimeError:pass  # Settlement below must still prove the original generation ended.
+            self.manager('stopped')
             with locked(self.home/'service.lock',False):pass
+        self.save(launch=None)
         backup=self.folder/'backup'
         if digest(backup/'binary')!=self.job['previous_sha256']:raise RuntimeError('rollback_digest_mismatch')
         with locked(self.home/'service.lock',False):
@@ -312,7 +322,7 @@ class Worker:
             self.save('succeeded',changed=False,completed_at=int(time.time()*1000));return
         if self.job['state'] in CRITICAL:self.rollback('interrupted_update_recovered');return
         if digest(self.binary)!=self.job['installed_sha256'] or digest(self.home/'config.json')!=self.job['config_sha256']:raise RuntimeError('installation_changed')
-        candidate=self.folder/'candidate'/self.job['entry'];resources=candidate.parent.parent/'Resources' if sys.platform=='darwin' else candidate.parent
+        candidate=self.folder/'candidate'/self.job['entry'];resources=candidate.parent.parent/'Resources' if sys.platform=='darwin' and self.job.get('source')!='local_download' else candidate.parent
         if digest(candidate)!=self.job['binary_sha256']:raise RuntimeError('candidate_changed')
         manifest=validate_runtime(resources)
         self.save('draining');self.gate()
@@ -352,10 +362,11 @@ class Worker:
             if self.job.get('state') not in CRITICAL and gate.exists() and read(gate).get('plan_id')==self.id:gate.unlink()
 
 def main():
-    os.umask(0o077);home=Path(sys.argv[1]);identifier=str(uuid.UUID(sys.argv[2]));root=home/'native-updates'
+    os.umask(0o077);home=Path(sys.argv[1]);identifier=str(uuid.UUID(sys.argv[2]));request=str(uuid.UUID(sys.argv[3]));root=home/'native-updates'
     with locked(root/'worker.lock',True):
         # A delayed child from an acknowledged interrupted request must not run it again.
-        if read(root/identifier/'plan.json').get('state') not in {'queued','checking','draining',*CRITICAL}:return
+        selected=read(root/identifier/'plan.json')
+        if selected.get('request_id')!=request or selected.get('state') not in {'queued','checking','draining',*CRITICAL}:return
         try:Worker(home,identifier).execute()
         except Exception:
             file=root/identifier/'plan.json';job=read(file);job.update(state='recovery_required' if job.get('state') in CRITICAL else 'failed',reason='installation_update_unavailable');write(file,job)

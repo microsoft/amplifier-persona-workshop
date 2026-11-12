@@ -20,6 +20,8 @@ Native packages target Windows 11 (x64/ARM64), macOS (Intel/Apple silicon), and 
 
 The app keeps its private data in the current user's application-data folder. Reopening uses the same account, projects and evidence. Local HTTP is loopback-only; remote access and embedding use an explicitly configured HTTPS installation. [Configuration](docs/configuration.md) describes both modes and converter limits.
 
+To update, open your installed workshop, then open the complete newer download and choose **Update Persona Workshop**. The installed app's update controls remain available too. The update runs independently while the workshop restarts, preserves your start-at-sign-in choice, and makes no provider calls. If native cleanup cannot be confirmed, its saved record is retained rather than erased or automatically repeated; reopen the same download to inspect the result or use its available recovery action.
+
 ### Existing Linux installation
 
 The source installer retains PAM, HTTPS and systemd, including existing configuration and state. It installs Rust/build dependencies and system document converters when missing.

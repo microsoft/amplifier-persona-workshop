@@ -88,6 +88,7 @@ jobs:
         run: |
           package=$(python -c 'import pathlib; print(next(p for p in pathlib.Path("dist").iterdir() if p.name.endswith((".zip", ".tar.gz"))))')
           python tests/native_update_process.py --package "$package" --result dist/native-update-${{ matrix.target }}.json
+          python tests/native_update_process.py --package "$package" --managed --result dist/native-managed-update-${{ matrix.target }}.json
       - uses: actions/setup-node@v4
         if: matrix.target == 'x86_64-unknown-linux-gnu'
         with:
@@ -104,6 +105,7 @@ jobs:
           node real-service.mjs
           node markdown.mjs
           cd ../..
+          node tests/native-update-offer-browser.mjs
           package=$(python -c 'import pathlib; print(next(p for p in pathlib.Path("dist").iterdir() if p.name.endswith(".tar.gz")))')
           python tests/native_launch.py --package "$package" --browser --result dist/native-browser.json
       - uses: actions/upload-artifact@v4

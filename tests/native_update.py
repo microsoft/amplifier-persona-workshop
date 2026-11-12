@@ -45,36 +45,39 @@ class NativeUpdateTests(unittest.TestCase):
   with patch.object(worker,'api',return_value={'idle':False}),patch.object(worker,'stop') as stop:
    worker.apply();stop.assert_not_called()
   self.assertEqual(worker.job['state'],'deferred')
- def test_rollback_reconciles_the_known_candidate_before_its_api_is_ready(self):
-  from types import SimpleNamespace
+ def test_rollback_does_not_replace_an_unresolved_managed_generation(self):
+  worker=self.worker();backup=self.folder/'backup';backup.mkdir();(backup/'binary').write_bytes(b'previous');worker.job.update(previous_sha256=u.digest(backup/'binary'),launch={'nonce':str(uuid.uuid4()),'mode':'candidate'})
+  with patch.object(worker,'stop',side_effect=ConnectionRefusedError()),patch.object(worker,'manager',side_effect=RuntimeError('native generation unresolved')),patch.object(worker,'replace') as replace:
+   with self.assertRaisesRegex(RuntimeError,'unresolved'):worker.rollback('fixture_failed_health')
+   replace.assert_not_called()
+  self.assertEqual(worker.job['state'],'rolling_back');self.assertIsNotNone(worker.job['launch'])
+ def test_rollback_checks_native_settlement_before_swap(self):
   worker=self.worker();backup=self.folder/'backup';backup.mkdir();(backup/'binary').write_bytes(b'previous');worker.job['previous_sha256']=u.digest(backup/'binary')
   calls=[]
-  def stop_before_api_ready():
-   calls.append(True)
-   if len(calls)<3:raise ConnectionRefusedError()
-  # The service lock stays free until this known process has actually started.
-  worker.started_process=SimpleNamespace(poll=lambda:0 if len(calls)>=3 else None)
-  with patch.object(worker,'stop',side_effect=stop_before_api_ready),patch.object(worker,'replace'),patch.object(worker,'start'),patch.object(worker,'health'):
-   worker.rollback('fixture_failed_health');self.assertEqual(len(calls),3)
-  self.assertEqual(worker.job['state'],'rolled_back')
+  def manager(operation,**kwargs):calls.append(operation);return {'inactive':True}
+  with patch.object(worker,'stop',side_effect=ConnectionRefusedError()),patch.object(worker,'manager',side_effect=manager),patch.object(worker,'replace'),patch.object(worker,'start'),patch.object(worker,'health'):
+   worker.rollback('fixture_failed_health')
+  self.assertEqual(calls,['stopped']);self.assertEqual(worker.job['state'],'rolled_back')
  def test_identical_release_has_no_cutover(self):
   worker=self.worker();worker.job.update(up_to_date=True,binary_sha256=u.digest(self.binary))
   with patch.object(worker,'stop') as stop:
    worker.apply();stop.assert_not_called()
   self.assertEqual(worker.job['state'],'succeeded');self.assertFalse(worker.job['changed'])
- def test_replacement_launch_is_durable_before_process_dispatch(self):
-  from types import SimpleNamespace
-  worker=self.worker();worker.save('verifying',binary_sha256=u.digest(self.binary))
-  launches=[]
-  def spawn(command,**kwargs):
-   journal=u.read(worker.file);launch=journal.get('launch')
-   self.assertIsInstance(launch,dict,'A replacement launch must be recorded before Popen')
-   self.assertEqual(launch['mode'],'candidate');self.assertEqual(launch['binary_sha256'],u.digest(self.binary))
-   self.assertEqual(kwargs['env']['PERSONA_UPDATE_PLAN'],self.id)
-   self.assertEqual(kwargs['env']['PERSONA_UPDATE_LAUNCH'],launch['nonce']);launches.append(launch['nonce'])
-   return SimpleNamespace(pid=123)
-  with patch.object(u.subprocess,'Popen',side_effect=spawn):worker.start();worker.start()
-  self.assertNotEqual(launches[0],launches[1],'Each dispatch invalidates prior launch identity')
+ def test_replacement_launch_is_durable_before_native_dispatch(self):
+  worker=self.worker();worker.save('verifying',binary_sha256=u.digest(self.binary));launches=[]
+  def manager(operation,**kwargs):
+   if operation=='stopped':return {'inactive':True}
+   self.assertEqual(operation,'start');journal=u.read(worker.file);launch=journal.get('launch')
+   self.assertIsInstance(launch,dict);self.assertEqual(launch['mode'],'candidate');self.assertEqual(launch['binary_sha256'],u.digest(self.binary))
+   self.assertEqual(kwargs['nonce'],launch['nonce']);launches.append(launch['nonce']);return {'status':'accepted'}
+  with patch.object(worker,'manager',side_effect=manager),patch.object(u.subprocess,'Popen') as child:
+   worker.start();child.assert_not_called()
+  self.assertEqual(len(launches),1)
+ def test_unresolved_previous_start_cannot_even_write_a_new_nonce(self):
+  worker=self.worker();original={'nonce':str(uuid.uuid4()),'mode':'candidate'};worker.save('verifying',binary_sha256=u.digest(self.binary),launch=original)
+  before=worker.file.read_bytes()
+  with patch.object(worker,'manager',side_effect=RuntimeError('prior generation unobserved')),self.assertRaisesRegex(RuntimeError,'unobserved'):worker.start()
+  self.assertEqual(worker.file.read_bytes(),before)
  def test_replace_keeps_other_installation_state_and_recovers_missing_runtime_dir(self):
   (self.home/'secrets/token').write_bytes(b'private');(self.home/'runtime/old').write_bytes(b'old');candidate=self.folder/'binary';candidate.write_bytes(b'new');runtime=self.folder/'new-runtime';runtime.mkdir();(runtime/'new').write_bytes(b'new-runtime')
   self.worker().replace(candidate,runtime);self.assertEqual(self.binary.read_bytes(),b'new');self.assertEqual((self.home/'runtime/new').read_bytes(),b'new-runtime');self.assertEqual((self.home/'secrets/token').read_bytes(),b'private')

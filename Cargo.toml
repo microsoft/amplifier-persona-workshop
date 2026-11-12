@@ -10,7 +10,7 @@ description = "Person-specific communication and working-style profiles, evaluat
 
 [dependencies]
 amplifier-acp-connection = { git = "https://github.com/microsoft/amplifier-constellation", rev = "e0d6a03fd342b295d349b633d400376efbbe2c40" }
-amplifier-native-platform = { git = "https://github.com/microsoft/amplifier-constellation", rev = "2d8f4a3dba21631a4fefea00303d8c9b78a46e43", features = ["local-auth"] }
+amplifier-native-platform = { git = "https://github.com/microsoft/amplifier-constellation", rev = "02b79049e7da9e393463363782e07b89431f8617", features = ["local-auth", "installation"] }
 anyhow = "1"
 base64 = "0.22"
 axum = { version = "0.8.9", features = ["macros"] }
