@@ -68,13 +68,15 @@ async fn command(c: &Extractor, input: Value) -> ApiResult<Value> {
     cmd.envs(&c.env);
     #[cfg(unix)]
     cmd.process_group(0);
+    #[cfg(windows)]
+    cmd.creation_flags(windows_sys::Win32::System::Threading::CREATE_SUSPENDED);
     let mut child = cmd.spawn().map_err(|_| {
         ApiError::bad("The configured import or transcription command is unavailable")
     })?;
     #[cfg(unix)]
     let _group = ProcessGroup(child.id().unwrap_or(0));
     #[cfg(windows)]
-    let _job = crate::process_tree::ProcessJob::attach(&child)?;
+    let _job = crate::process_tree::ProcessJob::attach_suspended(&mut child).await?;
     let mut stdin = child.stdin.take().unwrap();
     let mut stdout = child.stdout.take().unwrap().take(3 * 1024 * 1024 + 1);
     let work = async {

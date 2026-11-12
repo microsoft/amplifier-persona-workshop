@@ -55,13 +55,15 @@ impl Peer {
         cmd.envs(&c.env);
         #[cfg(unix)]
         cmd.process_group(0);
+        #[cfg(windows)]
+        cmd.creation_flags(windows_sys::Win32::System::Threading::CREATE_SUSPENDED);
         let mut child = cmd
             .spawn()
             .context("Could not start the configured ACP extractor")?;
         #[cfg(unix)]
         let pid = child.id().unwrap_or(0);
         #[cfg(windows)]
-        let job = crate::process_tree::ProcessJob::attach(&child)?;
+        let job = crate::process_tree::ProcessJob::attach_suspended(&mut child).await?;
         let input = child.stdin.take().context("Missing ACP input")?;
         let output = child.stdout.take().context("Missing ACP output")?;
         let connection =
