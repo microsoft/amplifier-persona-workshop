@@ -11,7 +11,7 @@ use anyhow::{Context, Result, ensure};
 use axum::{Json, extract::State, http::HeaderMap};
 use serde::Deserialize;
 use serde_json::{Value, json};
-use std::{path::Path, process::Stdio, sync::Arc};
+use std::{path::Path, sync::Arc};
 const SCRIPT: &[u8] = include_bytes!("../scripts/native_update.py");
 fn read(path: &Path) -> Result<Value> {
     let metadata = std::fs::symlink_metadata(path)?;
@@ -107,7 +107,20 @@ pub fn blocks(home: &Path) -> bool {
 pub fn validate_launch(home: &Path) -> Result<bool> {
     let plan = std::env::var("PERSONA_UPDATE_PLAN").ok();
     let nonce = std::env::var("PERSONA_UPDATE_LAUNCH").ok();
+    if plan.is_none() && nonce.is_none() {
+        return validate_ordinary_reopen(home);
+    }
     validate_launch_intent(home, plan.as_deref(), nonce.as_deref())
+}
+fn validate_ordinary_reopen(home: &Path) -> Result<bool> {
+    if crate::native_update_service::validate_managed_launch(home).unwrap_or(false) {
+        return Ok(true);
+    }
+    // Ordinary reopening must retain management/recovery even when a saved
+    // managed claim belongs to a process from before a reboot. Failure does
+    // not grant a claim or work: the unresolved journal still blocks every
+    // domain mutation, and health requires the original native generation.
+    validate_launch_intent(home, None, None)
 }
 fn validate_launch_intent(home: &Path, plan: Option<&str>, nonce: Option<&str>) -> Result<bool> {
     if plan.is_none() && nonce.is_none() {
@@ -238,11 +251,16 @@ pub async fn command(
     let value = tokio::task::spawn_blocking(move || queue(&home, input))
         .await
         .map_err(|_| ApiError::bad("Update preparation did not finish"))??;
+    tokio::spawn(crate::native_update_service::reconcile(s.home.clone()));
     Ok(Json(value))
 }
 fn queue(home: &Path, input: Command) -> Result<Value> {
+    ensure!(
+        ["check", "apply", "rollback", "recover"].contains(&input.action.as_str()),
+        "Choose check, apply, rollback or recover"
+    );
     let root = home.join("native-updates");
-    config::private_dir(&root)?;
+    crate::native_update_service::ensure_directory(&root)?;
     let lock = std::fs::OpenOptions::new()
         .create(true)
         .truncate(false)
@@ -285,14 +303,11 @@ fn queue(home: &Path, input: Command) -> Result<Value> {
             "An update is already in progress or needs recovery"
         );
     }
-    let _recovery_guard = if ["recover", "rollback"].contains(&input.action.as_str()) {
-        Some(worker_guard(home)?)
-    } else {
-        None
-    };
+    crate::native_update_service::settle_previous(home)?;
+    let _worker_guard = worker_guard(home)?;
     let id = input.plan_id.unwrap_or(input.request_id).to_string();
     let folder = root.join(&id);
-    config::private_dir(&folder)?;
+    crate::native_update_service::ensure_directory(&folder)?;
     let mut effective_action = input.action.clone();
     let mut job = match input.action.as_str() {
         "recover" => {
@@ -318,6 +333,10 @@ fn queue(home: &Path, input: Command) -> Result<Value> {
                 previous["state"] = json!("failed");
                 previous["reason"] = json!("interrupted_before_cutover");
                 previous["request_action"] = json!("recover");
+                previous["worker_request_id"] = previous
+                    .get("worker_request_id")
+                    .unwrap_or(&previous["request_id"])
+                    .clone();
                 previous["request_id"] = json!(input.request_id);
                 write_journal(&folder.join("plan.json"), &previous)?;
                 config::private_write(&request_file, &serde_json::to_vec(&previous)?)?;
@@ -367,8 +386,17 @@ fn queue(home: &Path, input: Command) -> Result<Value> {
         );
     }
     job["critical_recovery"] = json!(critical_recovery);
-    // Invalidate a replacement process from an earlier request before recovery.
-    job["launch"] = Value::Null;
+    if critical_recovery {
+        job["previous_request_id"] = job
+            .get("worker_request_id")
+            .unwrap_or(&job["request_id"])
+            .clone();
+    }
+    // Recovery retains the original launch identity until its native generation
+    // is observed settled. A temporarily absent process is not a cancelled Start.
+    if !critical_recovery {
+        job["launch"] = Value::Null;
+    }
     job["action"] = json!(effective_action);
     job["request_action"] = json!(input.action);
     job["updated_at"] = json!(crate::state::now_ms());
@@ -378,6 +406,7 @@ fn queue(home: &Path, input: Command) -> Result<Value> {
         "queued"
     });
     job["request_id"] = json!(input.request_id);
+    job["worker_request_id"] = json!(input.request_id);
     // The worker runs from its own private Python copy so Windows can replace the installed runtime.
     if !folder.join("worker-runtime").exists() {
         crate::desktop::copy_runtime(&home.join("runtime"), &folder.join("worker-runtime"))?;
@@ -386,41 +415,175 @@ fn queue(home: &Path, input: Command) -> Result<Value> {
     write_journal(&folder.join("plan.json"), &job)?;
     write_journal(&root.join("active.json"), &json!({"id":id}))?;
     config::private_write(&request_file, &serde_json::to_vec(&job)?)?;
-    let python = folder.join("worker-runtime/python").join(if cfg!(windows) {
-        "python.exe"
-    } else {
-        "bin/python3"
-    });
-    let mut child = std::process::Command::new(python);
-    child
-        .args(["-I", "-B", "-X", "utf8"])
-        .arg(folder.join("worker.py"))
-        .arg(home)
-        .arg(&id)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        child.creation_flags(0x08000000 | 0x00000200);
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        child.process_group(0);
-    }
-    if child.spawn().is_err() {
+    // A process group does not leave its parent's systemd cgroup or Windows
+    // task Job. The owning OS manager launches this fixed operation separately.
+    if let Err(error) = crate::native_update_service::prepare(home, &id) {
         job["state"] = json!(if critical_recovery {
             "recovery_required"
         } else {
             "failed"
         });
-        job["reason"] = json!("update_worker_unavailable");
+        job["reason"] = json!("native_worker_registration_unconfirmed");
+        job["native_error"] = json!(error.to_string());
         write_journal(&folder.join("plan.json"), &job)?;
+        return Ok(job);
     }
-    Ok(job)
+    // The new worker cannot acquire its operation lock until this preparation
+    // finishes; release our guard before dispatching it through the manager.
+    drop(_worker_guard);
+    crate::native_update_service::start_worker(home, &id)?;
+    // Once Start may have acted, the worker is the journal writer. The separate
+    // native dispatch receipt retains refusal/unknown without overwriting a
+    // concurrently advancing worker with our earlier queued snapshot.
+    read(&folder.join("plan.json"))
 }
+
+/// Stage only this running download's verified bundle. The offer supplies no
+/// URL, arbitrary executable or service command. Existing work stays online;
+/// Apply uses the same admission, worker, and recovery path as the installed UI.
+pub fn prepare_local(home: &Path, binary: &Path) -> Result<Value> {
+    use sha2::{Digest, Sha256};
+    use std::fs;
+    allowed(home)?;
+    ensure!(
+        fs::canonicalize(binary)? == fs::canonicalize(std::env::current_exe()?)?,
+        "Only this opened Persona download can be prepared"
+    );
+    let resources = crate::desktop::runtime_source(binary)?;
+    let manifest = read(&resources.join("native-bundle.json"))?;
+    ensure!(
+        manifest["version"] == env!("CARGO_PKG_VERSION"),
+        "Download version and runtime disagree"
+    );
+    let digest =
+        |path: &Path| -> Result<String> { Ok(format!("{:x}", Sha256::digest(fs::read(path)?))) };
+    let expected = digest(binary)?;
+    let runtime_digest = digest(&resources.join("native-bundle.json"))?;
+    let root = home.join("native-updates");
+    crate::native_update_service::ensure_directory(&root)?;
+    let lock = fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(root.join("queue.lock"))?;
+    fs2::FileExt::try_lock_exclusive(&lock)
+        .context("Another update operation is being prepared")?;
+    if let Some(current) = active(home)? {
+        if current["source"] == "local_download"
+            && !["succeeded", "rolled_back", "failed"]
+                .contains(&current["state"].as_str().unwrap_or(""))
+        {
+            ensure!(
+                same_download(&current, &expected, &runtime_digest),
+                "A different complete download owns the retained update; its files and request were preserved"
+            );
+            return Ok(current);
+        }
+        ensure!(
+            ![
+                "queued",
+                "checking",
+                "draining",
+                "stopping",
+                "swapping",
+                "verifying",
+                "rolling_back",
+                "recovery_required"
+            ]
+            .contains(&current["state"].as_str().unwrap_or("")),
+            "The current update must settle before preparing another download"
+        );
+    }
+    crate::native_update_service::settle_previous(home)?;
+    let installed = amplifier_native_platform::installed_binary(&crate::desktop::APPLICATION, home);
+    let before_config = digest(&home.join("config.json"))?;
+    let before_binary = digest(&installed)?;
+    let identifier = uuid::Uuid::new_v4().to_string();
+    let folder = root.join(&identifier);
+    crate::native_update_service::ensure_directory(&folder)?;
+    let candidate = folder.join("candidate");
+    crate::native_update_service::ensure_directory(&candidate)?;
+    write_journal(
+        &folder.join("local-preparation.json"),
+        &json!({"id":identifier,"source":"local_download","binary_sha256":expected,"state":"preparing"}),
+    )?;
+    crate::desktop::copy_download_support(binary, &candidate)?;
+    let name = if cfg!(windows) {
+        "persona-workshop.exe"
+    } else {
+        "persona-workshop"
+    };
+    let staged = candidate.join(name);
+    amplifier_native_platform::private_create(&staged, &fs::read(binary)?)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&staged, fs::Permissions::from_mode(0o700))?;
+    }
+    // The worker's release layout has the manifest beside the executable; the
+    // installed runtime also carries its own exact copy for future updates.
+    amplifier_native_platform::private_create(
+        &candidate.join("native-bundle.json"),
+        &fs::read(candidate.join("runtime/native-bundle.json"))?,
+    )?;
+    ensure!(
+        digest(&staged)? == expected
+            && digest(binary)? == expected
+            && digest(&installed)? == before_binary
+            && digest(&home.join("config.json"))? == before_config,
+        "Download or installation changed during preparation"
+    );
+    let value = json!({"schema":1,"id":identifier,"state":"ready","action":"apply","source":"local_download",
+        "entry":name,"binary_sha256":expected,"runtime_manifest_sha256":runtime_digest,"installed_sha256":before_binary,"config_sha256":before_config,
+        "version":env!("CARGO_PKG_VERSION"),"release_url":"","created_at":crate::state::now_ms(),
+        "updated_at":crate::state::now_ms(),"up_to_date":expected==before_binary && digest(&home.join("runtime/native-bundle.json"))?==runtime_digest});
+    write_journal(&folder.join("plan.json"), &value)?;
+    write_journal(
+        &folder.join("local-preparation.json"),
+        &json!({"id":identifier,"source":"local_download","binary_sha256":expected,"state":"ready"}),
+    )?;
+    write_journal(&root.join("active.json"), &json!({"id":identifier}))?;
+    Ok(value)
+}
+
+fn same_download(plan: &Value, image: &str, runtime: &str) -> bool {
+    plan["source"] == "local_download"
+        && plan["binary_sha256"] == image
+        && plan["runtime_manifest_sha256"] == runtime
+}
+
+/// Explicit confirmation from the separate local download offer. The durable
+/// request ID is reused after a lost acknowledgement, never another dispatch.
+pub fn apply_local(home: &Path, plan: &str, request: &str) -> Result<Value> {
+    allowed(home)?;
+    queue(
+        home,
+        Command {
+            action: "apply".into(),
+            plan_id: Some(uuid::Uuid::parse_str(plan)?),
+            request_id: uuid::Uuid::parse_str(request)?,
+        },
+    )
+}
+
+pub fn recover_local(home: &Path, plan: &str, request: &str) -> Result<Value> {
+    allowed(home)?;
+    let current = active(home)?.context("No update is selected")?;
+    ensure!(
+        current["id"] == plan && current["source"] == "local_download",
+        "A different update owns this recovery"
+    );
+    queue(
+        home,
+        Command {
+            action: "recover".into(),
+            plan_id: Some(uuid::Uuid::parse_str(plan)?),
+            request_id: uuid::Uuid::parse_str(request)?,
+        },
+    )
+}
+
 pub async fn readiness(
     State(s): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -516,11 +679,38 @@ pub async fn admission(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn same_image_with_different_private_runtime_cannot_reuse_a_local_plan() {
+        let plan = json!({"source":"local_download","binary_sha256":"same-image","runtime_manifest_sha256":"original-runtime"});
+        assert!(same_download(&plan, "same-image", "original-runtime"));
+        assert!(!same_download(&plan, "same-image", "changed-runtime"));
+        assert!(!same_download(&plan, "changed-image", "original-runtime"));
+    }
+    #[test]
+    fn retained_unusable_managed_claim_keeps_recovery_ui_without_new_work_or_claim() {
+        let (dir, identifier) = fixture("verifying");
+        let folder = dir.path().join("native-updates").join(&identifier);
+        let nonce = uuid::Uuid::new_v4().to_string();
+        let mut job = active(dir.path()).unwrap().unwrap();
+        job["launch"] = json!({"nonce":nonce,"mode":"candidate","binary_sha256":"retained"});
+        write_journal(&folder.join("plan.json"), &job).unwrap();
+        let claim = folder.join(format!("manager-claim-{nonce}.json"));
+        std::fs::write(&claim, b"original retained process evidence").unwrap();
+        std::fs::write(folder.join("manager-launch.json"), b"{interrupted").unwrap();
+        assert!(!validate_ordinary_reopen(dir.path()).unwrap());
+        assert!(blocks(dir.path()));
+        assert_eq!(
+            std::fs::read(claim).unwrap(),
+            b"original retained process evidence"
+        );
+        assert_eq!(active(dir.path()).unwrap().unwrap(), job);
+    }
     fn fixture(phase: &str) -> (tempfile::TempDir, String) {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("native-updates");
         let id = uuid::Uuid::new_v4().to_string();
-        config::private_dir(&root.join(&id)).unwrap();
+        amplifier_native_platform::private_create_dir(&root).unwrap();
+        amplifier_native_platform::private_create_dir(&root.join(&id)).unwrap();
         config::private_write(
             &root.join("active.json"),
             json!({"id":id}).to_string().as_bytes(),

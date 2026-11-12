@@ -325,6 +325,51 @@ async fn loopback_origin_and_host_are_pinned_before_login_or_api_access() {
 }
 
 #[tokio::test]
+async fn download_offer_can_return_to_document_but_cannot_make_cross_origin_api_calls() {
+    let (_home, _state, app) = fixture(true);
+    let headers = [
+        ("host", "127.0.0.1:49152"),
+        ("sec-fetch-site", "same-site"),
+        ("sec-fetch-mode", "navigate"),
+        ("sec-fetch-dest", "document"),
+    ];
+    let mut document = Request::builder().method("GET").uri("/");
+    for (key, value) in headers {
+        document = document.header(key, value);
+    }
+    let document = app
+        .clone()
+        .oneshot(document.body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(document.status(), StatusCode::OK);
+    assert!(
+        document.headers()["content-type"]
+            .to_str()
+            .unwrap()
+            .starts_with("text/html")
+    );
+    assert_eq!(
+        request(&app, "GET", "/auth/session", &headers, Value::Null)
+            .await
+            .0,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        request(
+            &app,
+            "POST",
+            "/auth/login",
+            &headers,
+            json!({"username":"owner","password":PASSWORD})
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
+}
+
+#[tokio::test]
 async fn failed_local_logins_are_rate_limited_and_corrupt_hash_never_falls_back() {
     let (home, _state, app) = fixture(true);
     let hash = home.path().join("secrets/local-password.json");

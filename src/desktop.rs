@@ -98,6 +98,25 @@ pub async fn launch(home: PathBuf, open_browser: bool) -> Result<()> {
         return crate::server::serve_with_browser(home, open_browser, Some(listener)).await;
     }
     let config = Config::load(&home)?;
+    if crate::native_update_offer::different_download(&home)? {
+        // A reopened interrupted download must retain recovery even when the
+        // old listener has stopped. Preparation binds it to the same plan.
+        let pending = crate::native_update::active(&home)?.is_some_and(|j| {
+            j["source"] == "local_download"
+                && !["succeeded", "rolled_back", "failed"]
+                    .contains(&j["state"].as_str().unwrap_or(""))
+        });
+        if !pending {
+            let status = local_api(&home, "GET", "status", None).await.context(
+                "Open the installed Persona Workshop first, then reopen this download to update it",
+            )?;
+            ensure!(
+                status["id"] == config.id,
+                "A different installation answered"
+            );
+        }
+        return crate::native_update_offer::serve(home, open_browser).await;
+    }
     if let Ok(status) = local_api(&home, "GET", "status", None).await {
         ensure!(
             status["id"] == config.id,
@@ -335,9 +354,13 @@ pub fn python_path(home: &Path) -> PathBuf {
     })
 }
 fn install_support(home: &Path) -> Result<()> {
-    use sha2::{Digest, Sha256};
-    let executable = std::env::current_exe()?;
-    let parent = executable.parent().context("No application folder")?;
+    copy_download_support(&std::env::current_exe()?, home)
+}
+
+/// Inspect the complete download without changing an existing installation.
+/// The caller chooses only its own executable, never a path from the browser.
+pub fn runtime_source(binary: &Path) -> Result<PathBuf> {
+    let parent = binary.parent().context("No application folder")?;
     let bundle = if cfg!(target_os = "macos") && parent.ends_with("MacOS") {
         parent
             .parent()
@@ -346,16 +369,30 @@ fn install_support(home: &Path) -> Result<()> {
     } else {
         parent.to_owned()
     };
-    let manifest_path = bundle.join("native-bundle.json");
+    let (manifest, _) = download_manifest(&bundle)?;
+    for (name, expected) in manifest["python_files"].as_object().unwrap() {
+        let _ = download_member(&bundle, name, expected)?;
+    }
+    let python = bundle.join("runtime/python").join(if cfg!(windows) {
+        "python.exe"
+    } else {
+        "bin/python3"
+    });
+    ensure!(python.is_file(), "Private Python executable missing");
+    Ok(bundle)
+}
+fn download_manifest(bundle: &Path) -> Result<(Value, Vec<u8>)> {
+    let path = bundle.join("native-bundle.json");
+    let metadata = std::fs::symlink_metadata(&path)
+        .context("Open the complete Persona Workshop download, with its private runtime folder")?;
     ensure!(
-        !manifest_path.is_symlink()
-            && std::fs::metadata(&manifest_path)
-                .is_ok_and(|m| m.is_file() && m.len() <= 4 * 1024 * 1024),
+        metadata.is_file()
+            && !metadata.file_type().is_symlink()
+            && metadata.len() <= 4 * 1024 * 1024,
         "Missing or invalid native bundle manifest"
     );
-    let bytes = std::fs::read(manifest_path)
-        .context("Open the complete Persona Workshop download, with its private runtime folder")?;
-    let manifest: Value = serde_json::from_slice(&bytes)?;
+    let raw = std::fs::read(path)?;
+    let manifest: Value = serde_json::from_slice(&raw)?;
     ensure!(
         manifest["schema"] == 1 && manifest["component"] == "persona-workshop",
         "Invalid native bundle manifest"
@@ -367,38 +404,73 @@ fn install_support(home: &Path) -> Result<()> {
         !files.is_empty() && files.len() < 20000,
         "Invalid private runtime inventory"
     );
-    let target = home.join("runtime/python");
-    platform::private_dir(&target)?;
-    for (name, expected) in files {
-        let path = Path::new(name);
-        ensure!(
-            path.components()
-                .all(|c| matches!(c, std::path::Component::Normal(_)))
-                && !name.contains('\\')
-                && !name.contains(':'),
-            "Invalid runtime member"
-        );
-        let source = bundle.join("runtime/python").join(path);
-        let metadata = std::fs::symlink_metadata(&source)?;
-        ensure!(
-            metadata.is_file() && metadata.len() <= 256 * 1024 * 1024,
-            "Invalid private runtime member"
-        );
-        let bytes = std::fs::read(&source)?;
-        ensure!(
-            expected.as_str() == Some(format!("{:x}", Sha256::digest(&bytes)).as_str()),
-            "Private runtime file failed verification"
-        );
-        let destination = target.join(path);
-        std::fs::create_dir_all(destination.parent().context("No runtime parent")?)?;
-        std::fs::write(&destination, bytes)?;
-        std::fs::set_permissions(&destination, metadata.permissions())?;
+    Ok((manifest, raw))
+}
+fn download_member(
+    bundle: &Path,
+    name: &str,
+    expected: &Value,
+) -> Result<(Vec<u8>, std::fs::Permissions)> {
+    use sha2::{Digest, Sha256};
+    let path = Path::new(name);
+    ensure!(
+        path.components()
+            .all(|c| matches!(c, std::path::Component::Normal(_)))
+            && !name.contains(['\\', ':']),
+        "Invalid runtime member"
+    );
+    let source = bundle.join("runtime/python").join(path);
+    let metadata = std::fs::symlink_metadata(&source)?;
+    ensure!(
+        metadata.is_file()
+            && !metadata.file_type().is_symlink()
+            && metadata.len() <= 256 * 1024 * 1024,
+        "Invalid private runtime member"
+    );
+    let bytes = std::fs::read(&source)?;
+    ensure!(
+        expected.as_str() == Some(format!("{:x}", Sha256::digest(&bytes)).as_str()),
+        "Private runtime file failed verification"
+    );
+    Ok((bytes, metadata.permissions()))
+}
+fn private_runtime_parent(root: &Path, relative: &Path) -> Result<()> {
+    crate::native_update_service::ensure_directory(root)?;
+    let mut next = root.to_owned();
+    for part in relative.components() {
+        let std::path::Component::Normal(part) = part else {
+            anyhow::bail!("Invalid runtime directory");
+        };
+        next.push(part);
+        crate::native_update_service::ensure_directory(&next)?;
+    }
+    Ok(())
+}
+/// Copy the verified download into a fresh destination's private runtime.
+pub fn copy_download_support(binary: &Path, destination_home: &Path) -> Result<()> {
+    let bundle = runtime_source(binary)?;
+    let (manifest, raw) = download_manifest(&bundle)?;
+    let target = destination_home.join("runtime/python");
+    private_runtime_parent(destination_home, Path::new("runtime/python"))?;
+    for (name, expected) in manifest["python_files"].as_object().unwrap() {
+        let (bytes, permissions) = download_member(&bundle, name, expected)?;
+        let relative = Path::new(name);
+        private_runtime_parent(
+            &target,
+            relative.parent().context("Missing runtime parent")?,
+        )?;
+        let output = target.join(relative);
+        platform::private_create(&output, &bytes)?;
+        #[cfg(unix)]
+        std::fs::set_permissions(&output, permissions)?;
+        #[cfg(not(unix))]
+        let _ = permissions;
     }
     ensure!(
-        python_path(home).is_file(),
+        python_path(destination_home).is_file(),
         "Private Python executable missing"
     );
-    platform::private_write(&home.join("runtime/native-bundle.json"), &bytes)?;
+    platform::private_create(&destination_home.join("runtime/native-bundle.json"), &raw)?;
     Ok(())
 }
 
@@ -450,4 +522,82 @@ pub fn copy_runtime(source: &Path, destination: &Path) -> Result<()> {
     }
     platform::private_write(&destination.join("native-bundle.json"), &raw)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod download_tests {
+    use super::*;
+    use sha2::{Digest, Sha256};
+
+    fn bundle(root: &Path) -> PathBuf {
+        let binary = root.join(if cfg!(windows) {
+            "persona-workshop.exe"
+        } else {
+            "persona-workshop"
+        });
+        let name = if cfg!(windows) {
+            "python.exe"
+        } else {
+            "bin/python3"
+        };
+        let python = root.join("runtime/python").join(name);
+        std::fs::create_dir_all(python.parent().unwrap()).unwrap();
+        std::fs::write(&binary, b"fixture application").unwrap();
+        std::fs::write(python, b"fixture interpreter").unwrap();
+        std::fs::write(
+            root.join("native-bundle.json"),
+            serde_json::to_vec(&json!({
+                "schema":1,"component":"persona-workshop","version":env!("CARGO_PKG_VERSION"),
+                "python_files":{name:format!("{:x}",Sha256::digest(b"fixture interpreter"))}
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        binary
+    }
+    #[test]
+    fn complete_download_is_copied_to_fresh_private_runtime_without_overwrite() {
+        let temp = tempfile::tempdir().unwrap();
+        let binary = bundle(&temp.path().join("download"));
+        let home = temp.path().join("destination");
+        assert_eq!(runtime_source(&binary).unwrap(), binary.parent().unwrap());
+        copy_download_support(&binary, &home).unwrap();
+        assert_eq!(
+            std::fs::read(python_path(&home)).unwrap(),
+            b"fixture interpreter"
+        );
+        let manifest = std::fs::read(home.join("runtime/native-bundle.json")).unwrap();
+        assert_eq!(
+            manifest,
+            std::fs::read(binary.parent().unwrap().join("native-bundle.json")).unwrap()
+        );
+        assert!(copy_download_support(&binary, &home).is_err());
+        assert_eq!(
+            std::fs::read(home.join("runtime/native-bundle.json")).unwrap(),
+            manifest
+        );
+    }
+    #[test]
+    fn tampered_download_is_refused_before_destination_creation() {
+        let temp = tempfile::tempdir().unwrap();
+        let binary = bundle(&temp.path().join("download"));
+        std::fs::write(
+            python_path(binary.parent().unwrap()),
+            b"changed interpreter",
+        )
+        .unwrap();
+        let home = temp.path().join("must-not-exist");
+        assert!(copy_download_support(&binary, &home).is_err());
+        assert!(!home.exists());
+    }
+    #[test]
+    fn unsafe_inventory_member_never_reads_or_copies_outside_bundle() {
+        let temp = tempfile::tempdir().unwrap();
+        let binary = bundle(&temp.path().join("download"));
+        let manifest = binary.parent().unwrap().join("native-bundle.json");
+        let mut value: Value = serde_json::from_slice(&std::fs::read(&manifest).unwrap()).unwrap();
+        value["python_files"] = json!({"../outside":"untrusted"});
+        std::fs::write(manifest, serde_json::to_vec(&value).unwrap()).unwrap();
+        assert!(runtime_source(&binary).is_err());
+    }
 }

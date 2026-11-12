@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """Exercise an extracted native download using only its bundled runtime (no model calls)."""
 import argparse
+import contextlib
 import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import stat
 import subprocess
@@ -15,6 +17,68 @@ import urllib.request
 import urllib.error
 import zipfile
 import uuid
+
+@contextlib.contextmanager
+def native_fixture(prefix):
+    root=Path(tempfile.mkdtemp(prefix=prefix))
+    try:yield root
+    except BaseException:
+        # An unconfirmed process wait must never be followed by deleting its
+        # installation. Failed fixtures retain only their own temporary tree.
+        print('Retained failed native fixture: '+str(root),file=__import__('sys').stderr)
+        raise
+    else:shutil.rmtree(root)
+
+def safe_log_tail(path,limit):
+    with path.open('rb') as stream:
+        stream.seek(0,os.SEEK_END);offset=max(0,stream.tell()-65536);stream.seek(offset)
+        data=stream.read(65536)
+    # Drop a partial first line so a truncated setup fragment cannot lose its
+    # recognizable prefix while retaining capability bytes in the error tail.
+    if offset:data=data.partition(b'\n')[2]
+    text=data.decode('utf-8',errors='replace')
+    return re.sub(r'(#setup=)[^\s"<>]+',r'\1[redacted]',text)[-limit:]
+
+def startup_failure(root,home,result,phase,started,process,budget):
+    """Bounded metadata only, captured before the fixture removes partial setup."""
+    report={'phase':phase,'elapsed_seconds':time.monotonic()-started,
+            'budget_seconds':budget,'process_returncode':process.poll() if process else None,
+            'copies':[]}
+    paths=[('installation',home)]
+    for candidate in root.glob('.persona-setup-*'):
+        try:uuid.UUID(candidate.name.removeprefix('.persona-setup-'))
+        except ValueError:continue
+        paths.append(('unpublished_setup',candidate))
+        if len(paths)==5:break
+    deadline=time.monotonic()+2
+    markers=('config.json','native-installation.json','runtime.json','state.sqlite3',
+             'bin/persona-workshop','bin/persona-workshop.exe','runtime/native-bundle.json')
+    for kind,path in paths:
+        item={'kind':kind,'exists':path.exists(),'symlink':path.is_symlink(),'runtime_files':0,
+              'runtime_bytes':0,'entries_examined':0,'bounded':False,'observation_errors':0}
+        item['markers']={name:(path/name).is_file() for name in markers} if not item['symlink'] else {}
+        pending=[path/'runtime'] if not item['symlink'] else []
+        while pending and item['entries_examined']<10000 and time.monotonic()<deadline:
+            directory=pending.pop()
+            if not directory.is_dir() or directory.is_symlink():continue
+            try:
+                with os.scandir(directory) as entries:
+                    for entry in entries:
+                        if item['entries_examined']>=10000 or time.monotonic()>=deadline:
+                            item['bounded']=True;break
+                        item['entries_examined']+=1
+                        if entry.is_symlink():continue
+                        if entry.is_dir(follow_symlinks=False):pending.append(Path(entry.path))
+                        elif entry.is_file(follow_symlinks=False):
+                            item['runtime_files']+=1;item['runtime_bytes']+=entry.stat(follow_symlinks=False).st_size
+            except OSError:item['observation_errors']+=1
+        item['bounded']|=bool(pending)
+        report['copies'].append(item)
+    if result:
+        target=result.with_suffix('.failure.json');target.parent.mkdir(parents=True,exist_ok=True)
+        with target.open('x',encoding='utf-8') as stream:json.dump(report,stream,indent=2);stream.write('\n')
+    print('Native setup failure metadata: '+json.dumps(report),file=__import__('sys').stderr)
+    return report
 
 def superseded_launch(binary, home, env):
     """A delayed replacement must fail before opening saved state or a listener."""
@@ -71,21 +135,36 @@ def request(base,path,body=None,headers=None):
     with response:return response.status,{k.lower():v for k,v in response.headers.items()},json.load(response)
 def run(package,result,browser=False):
     checks=[]
-    with tempfile.TemporaryDirectory(prefix='Persona native space ') as temporary:
+    with native_fixture('Persona native space ') as temporary:
         root=Path(temporary);bundle=root/'download';bundle.mkdir();extract(package,bundle)
         binary=next(p for p in bundle.rglob('persona-workshop.exe' if os.name=='nt' else 'persona-workshop') if p.is_file())
         binary.chmod(0o755);home=root/'private connection café 雪';env={k:v for k,v in os.environ.items() if not k.upper().startswith(('SLACK_','OPENAI_','ANTHROPIC_','AZURE_','GOOGLE_','AMPLIFIER_'))};env['PATH']=str(root/'no-tools');env['PYTHONDONTWRITEBYTECODE']='1'
-        def start():
-            log=open(root/'server.log','ab');p=subprocess.Popen([str(binary),'--home',str(home),'--no-browser'],env=env,stdin=subprocess.DEVNULL,stdout=log,stderr=log)
-            for _ in range(400):
-                if p.poll() is not None:raise AssertionError('Native app exited during startup: '+(root/'server.log').read_text(encoding='utf-8',errors='replace')[-1000:])
+        def start(initial=False):
+            # Fresh setup copies/verifies the complete private runtime. Restart
+            # retains its separate 40s allowance; HTTP/mutation limits are unchanged.
+            budget=180 if initial else 40;started=time.monotonic()
+            log=open(root/'server.log','ab');p=None
+            try:
+                p=subprocess.Popen([str(binary),'--home',str(home),'--no-browser'],env=env,stdin=subprocess.DEVNULL,stdout=log,stderr=log)
+                while time.monotonic()-started<budget:
+                    if p.poll() is not None:raise AssertionError('Native app exited during startup: '+safe_log_tail(root/'server.log',1000))
+                    try:
+                        endpoint=json.loads((home/'runtime.json').read_text(encoding='utf-8'));base=endpoint['url'];status,_,_=request(base,'/auth/session')
+                        if status==200:return p,base,log
+                    except (OSError,ValueError):pass
+                    time.sleep(.1)
+                raise AssertionError('Native app did not become ready')
+            except BaseException as error:
+                try:startup_failure(root,home,result,'initial_setup' if initial else 'restart',started,p,budget)
+                except Exception as diagnostic:error.add_note('Setup diagnostic failed: '+type(diagnostic).__name__)
                 try:
-                    endpoint=json.loads((home/'runtime.json').read_text(encoding='utf-8'));base=endpoint['url'];status,_,_=request(base,'/auth/session')
-                    if status==200:return p,base,log
-                except (OSError,ValueError):pass
-                time.sleep(.1)
-            p.terminate();p.wait();log.close();raise AssertionError('Native app did not become ready')
-        p,base,log=start()
+                    if p is not None:
+                        if p.poll() is None:p.terminate()
+                        p.wait(timeout=20)
+                except Exception as cleanup:error.add_note('Exact startup process cleanup unconfirmed: '+type(cleanup).__name__)
+                finally:log.close()
+                raise
+        p,base,log=start(initial=True)
         try:
             config=json.loads((home/'config.json').read_text(encoding='utf-8'));assert config['auth_mode']=='local-password' and config['web_transport']=='local-http'
             assert config['extractor'] is None and config['transcription'] is None and config['pdf_backend']=='pypdf';checks.append('fresh native no-agent installation')

@@ -12,7 +12,7 @@ class NativeUpdateTests(unittest.TestCase):
   self.root=self.home/'native-updates';self.folder=self.root/self.id;self.folder.mkdir(parents=True);(self.home/'bin').mkdir();(self.home/'secrets').mkdir();(self.home/'runtime').mkdir()
   self.binary=self.home/'bin'/('persona-workshop.exe' if os.name=='nt' else 'persona-workshop');self.binary.write_bytes(b'original')
   u.write(self.home/'config.json',{'id':self.agent,'auth_mode':'local-password','web_transport':'local-http','public_url':'http://127.0.0.1:1','port':1})
-  u.write(self.home/'native-installation.json',{'id':self.agent,'update_owner':'installation'});u.write(self.root/'active.json',{'id':self.id});u.write(self.folder/'plan.json',{'id':self.id,'state':'ready','action':'apply'})
+  u.write(self.home/'native-installation.json',{'id':self.agent,'update_owner':'installation'});u.write(self.root/'active.json',{'id':self.id});u.write(self.folder/'plan.json',{'id':self.id,'request_id':str(uuid.uuid4()),'state':'ready','action':'apply'})
  def worker(self):return u.Worker(self.home,self.id)
  def test_atomic_write_and_existing_owner_restriction(self):
   self.assertEqual(self.worker().config['id'],self.agent);u.write(self.home/'saved-connections.json',{'url':'https://owner.example'})
@@ -45,36 +45,77 @@ class NativeUpdateTests(unittest.TestCase):
   with patch.object(worker,'api',return_value={'idle':False}),patch.object(worker,'stop') as stop:
    worker.apply();stop.assert_not_called()
   self.assertEqual(worker.job['state'],'deferred')
- def test_rollback_reconciles_the_known_candidate_before_its_api_is_ready(self):
-  from types import SimpleNamespace
+ def test_rollback_does_not_replace_an_unresolved_managed_generation(self):
+  worker=self.worker();backup=self.folder/'backup';backup.mkdir();(backup/'binary').write_bytes(b'previous');worker.job.update(previous_sha256=u.digest(backup/'binary'),launch={'nonce':str(uuid.uuid4()),'mode':'candidate'})
+  with patch.object(worker,'stop',side_effect=ConnectionRefusedError()),patch.object(worker,'manager',side_effect=RuntimeError('native generation unresolved')),patch.object(worker,'replace') as replace:
+   with self.assertRaisesRegex(RuntimeError,'unresolved'):worker.rollback('fixture_failed_health')
+   replace.assert_not_called()
+  self.assertEqual(worker.job['state'],'rolling_back');self.assertIsNotNone(worker.job['launch'])
+ def test_rollback_checks_native_settlement_before_swap(self):
   worker=self.worker();backup=self.folder/'backup';backup.mkdir();(backup/'binary').write_bytes(b'previous');worker.job['previous_sha256']=u.digest(backup/'binary')
   calls=[]
-  def stop_before_api_ready():
-   calls.append(True)
-   if len(calls)<3:raise ConnectionRefusedError()
-  # The service lock stays free until this known process has actually started.
-  worker.started_process=SimpleNamespace(poll=lambda:0 if len(calls)>=3 else None)
-  with patch.object(worker,'stop',side_effect=stop_before_api_ready),patch.object(worker,'replace'),patch.object(worker,'start'),patch.object(worker,'health'):
-   worker.rollback('fixture_failed_health');self.assertEqual(len(calls),3)
-  self.assertEqual(worker.job['state'],'rolled_back')
+  def manager(operation,**kwargs):calls.append(operation);return {'inactive':True}
+  with patch.object(worker,'stop',side_effect=ConnectionRefusedError()),patch.object(worker,'manager',side_effect=manager),patch.object(worker,'replace'),patch.object(worker,'start'),patch.object(worker,'health'):
+   worker.rollback('fixture_failed_health')
+  self.assertEqual(calls,['stopped']);self.assertEqual(worker.job['state'],'rolled_back')
  def test_identical_release_has_no_cutover(self):
   worker=self.worker();worker.job.update(up_to_date=True,binary_sha256=u.digest(self.binary))
   with patch.object(worker,'stop') as stop:
    worker.apply();stop.assert_not_called()
   self.assertEqual(worker.job['state'],'succeeded');self.assertFalse(worker.job['changed'])
- def test_replacement_launch_is_durable_before_process_dispatch(self):
-  from types import SimpleNamespace
-  worker=self.worker();worker.save('verifying',binary_sha256=u.digest(self.binary))
-  launches=[]
-  def spawn(command,**kwargs):
-   journal=u.read(worker.file);launch=journal.get('launch')
-   self.assertIsInstance(launch,dict,'A replacement launch must be recorded before Popen')
-   self.assertEqual(launch['mode'],'candidate');self.assertEqual(launch['binary_sha256'],u.digest(self.binary))
-   self.assertEqual(kwargs['env']['PERSONA_UPDATE_PLAN'],self.id)
-   self.assertEqual(kwargs['env']['PERSONA_UPDATE_LAUNCH'],launch['nonce']);launches.append(launch['nonce'])
-   return SimpleNamespace(pid=123)
-  with patch.object(u.subprocess,'Popen',side_effect=spawn):worker.start();worker.start()
-  self.assertNotEqual(launches[0],launches[1],'Each dispatch invalidates prior launch identity')
+ def test_replacement_launch_is_durable_before_native_dispatch(self):
+  worker=self.worker();worker.save('verifying',binary_sha256=u.digest(self.binary));launches=[]
+  def manager(operation,**kwargs):
+   if operation=='stopped':return {'inactive':True}
+   self.assertEqual(operation,'start');journal=u.read(worker.file);launch=journal.get('launch')
+   self.assertIsInstance(launch,dict);self.assertEqual(launch['mode'],'candidate');self.assertEqual(launch['binary_sha256'],u.digest(self.binary))
+   self.assertEqual(kwargs['nonce'],launch['nonce']);launches.append(launch['nonce']);return {'status':'accepted'}
+  with patch.object(worker,'manager',side_effect=manager),patch.object(u.subprocess,'Popen') as child:
+   worker.start();child.assert_not_called()
+  self.assertEqual(len(launches),1)
+  self.assertEqual(worker.job['launch']['request_id'],worker.job['request_id'])
+ def test_unresolved_previous_start_cannot_even_write_a_new_nonce(self):
+  worker=self.worker();original={'nonce':str(uuid.uuid4()),'mode':'candidate'};worker.save('verifying',binary_sha256=u.digest(self.binary),launch=original)
+  before=worker.file.read_bytes()
+  with patch.object(worker,'manager',side_effect=RuntimeError('prior generation unobserved')),self.assertRaisesRegex(RuntimeError,'unobserved'):worker.start()
+  self.assertEqual(worker.file.read_bytes(),before)
+ def test_unknown_start_observes_only_its_original_intent_until_exact_claim(self):
+  worker=self.worker();worker.save('verifying',binary_sha256=u.digest(self.binary));calls=[];observed=[]
+  def manager(operation,**kwargs):
+   calls.append(operation)
+   if operation=='stopped':return {'inactive':True}
+   if operation=='start':return {'status':'unknown','code':'transport_unknown'}
+   self.assertEqual(operation,'observe');observed.append(kwargs)
+   self.assertEqual(worker.job['state'],'verifying')
+   if len(observed)==1:raise RuntimeError('Exact native claim not observed yet')
+   return {'observed':True}
+  with patch.object(worker,'manager',side_effect=manager):
+   worker.start();launch=dict(worker.job['launch'])
+   with patch.object(u.subprocess,'check_output',return_value='persona-workshop 0.7.2'),patch.object(worker,'api',return_value={'id':self.agent,'version':'0.7.2','pid':42}),patch.object(u.time,'sleep'):
+    worker.health(u.digest(self.binary))
+  self.assertEqual(calls,['stopped','start','observe','observe'])
+  self.assertEqual(worker.job['launch'],launch)
+  self.assertTrue(all(item=={'nonce':launch['nonce'],'pid':42} for item in observed))
+ def test_unknown_start_without_bound_claim_cannot_replace_or_retry(self):
+  worker=self.worker();worker.save('verifying',binary_sha256=u.digest(self.binary));calls=[]
+  def manager(operation,**kwargs):
+   calls.append(operation)
+   if operation=='stopped' and calls==['stopped']:return {'inactive':True}
+   if operation=='start':return {'status':'unknown','code':'transport_unknown'}
+   raise RuntimeError('native generation unbound')
+  with patch.object(worker,'manager',side_effect=manager):
+   worker.start();launch=dict(worker.job['launch'])
+   with patch.object(u.subprocess,'check_output',return_value='persona-workshop 0.7.2'),patch.object(worker,'api',return_value={'id':self.agent,'version':'0.7.2','pid':42}),patch.object(u.time,'monotonic',side_effect=[0,1,61]),patch.object(u.time,'sleep'),self.assertRaisesRegex(RuntimeError,'candidate_health_failed'):
+    worker.health(u.digest(self.binary))
+   with patch.object(worker,'stop',side_effect=ConnectionRefusedError()),patch.object(worker,'replace') as replace,self.assertRaisesRegex(RuntimeError,'unbound'):
+    worker.rollback('health_unconfirmed')
+   replace.assert_not_called()
+  self.assertEqual(calls.count('start'),1)
+  self.assertEqual(worker.job['launch'],launch)
+ def test_refused_and_malformed_start_do_not_enter_health_observation(self):
+  for outcome in [{'status':'refused'}, {'status':'unexpected'}, [], None]:
+   worker=self.worker();worker.save('verifying',binary_sha256=u.digest(self.binary))
+   with patch.object(worker,'manager',side_effect=[{'inactive':True},outcome]),self.assertRaisesRegex(RuntimeError,'replacement_native_start_'):worker.start()
  def test_replace_keeps_other_installation_state_and_recovers_missing_runtime_dir(self):
   (self.home/'secrets/token').write_bytes(b'private');(self.home/'runtime/old').write_bytes(b'old');candidate=self.folder/'binary';candidate.write_bytes(b'new');runtime=self.folder/'new-runtime';runtime.mkdir();(runtime/'new').write_bytes(b'new-runtime')
   self.worker().replace(candidate,runtime);self.assertEqual(self.binary.read_bytes(),b'new');self.assertEqual((self.home/'runtime/new').read_bytes(),b'new-runtime');self.assertEqual((self.home/'secrets/token').read_bytes(),b'private')

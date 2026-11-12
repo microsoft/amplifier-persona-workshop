@@ -21,7 +21,7 @@ import time
 import uuid
 import xml.etree.ElementTree as ET
 
-from native_launch import extract, request
+from native_launch import extract, request, startup_failure, native_fixture, safe_log_tail
 
 
 def checked(argv, **kwargs):
@@ -217,7 +217,7 @@ $v = @{xml=[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($t.Xml));sid
 
 def run(package, result):
     checks = []
-    with tempfile.TemporaryDirectory(prefix='Persona startup ') as temporary:
+    with native_fixture('Persona startup ') as temporary:
         root = Path(temporary).resolve()
         bundle = root / 'download'
         bundle.mkdir()
@@ -243,33 +243,43 @@ def run(package, result):
         removed = False
         log = (root / 'server.log').open('ab')
 
-        def ready(process=None, old_pid=None):
-            for _ in range(400):
-                if process is not None and process.poll() is not None:
-                    raise AssertionError('Native startup exited: ' + (root / 'server.log').read_text(encoding='utf-8', errors='replace')[-1800:])
+        def ready(process=None, old_pid=None, initial=False):
+            budget = 180 if initial else 40
+            started = time.monotonic()
+            try:
+                while time.monotonic() - started < budget:
+                    if process is not None and process.poll() is not None:
+                        raise AssertionError('Native startup exited: ' + safe_log_tail(root / 'server.log', 1800))
+                    try:
+                        base = json.loads((home / 'runtime.json').read_text(encoding='utf-8'))['url']
+                        token = (home / 'secrets/control-token').read_text(encoding='utf-8').strip()
+                        status, _, value = request(base, '/api/v1/status', headers={'Authorization': 'Bearer ' + token})
+                        if status == 200 and value['pid'] != old_pid:
+                            return base, value, {'Authorization': 'Bearer ' + token}
+                    except (OSError, ValueError):
+                        pass
+                    time.sleep(.1)
+                raise AssertionError('Native startup did not become ready')
+            except BaseException as error:
                 try:
-                    base = json.loads((home / 'runtime.json').read_text(encoding='utf-8'))['url']
-                    token = (home / 'secrets/control-token').read_text(encoding='utf-8').strip()
-                    status, _, value = request(base, '/api/v1/status', headers={'Authorization': 'Bearer ' + token})
-                    if status == 200 and value['pid'] != old_pid:
-                        return base, value, {'Authorization': 'Bearer ' + token}
-                except (OSError, ValueError):
-                    pass
-                time.sleep(.1)
-            raise AssertionError('Native startup did not become ready')
+                    startup_failure(root, home, result, 'initial_setup' if initial else 'restart_or_OS_launch', started, process, budget)
+                except Exception as diagnostic:
+                    error.add_note('Setup diagnostic failed: ' + type(diagnostic).__name__)
+                raise
 
-        def launch():
+        def launch(initial=False):
             process = subprocess.Popen([str(binary), '--home', str(home), '--no-browser'], env=env, stdin=subprocess.DEVNULL, stdout=log, stderr=log)
             processes.append(process)
-            return process, ready(process)
+            return process, ready(process, initial=initial)
 
         def stop(process):
             if process.poll() is None:
                 process.terminate()
-                process.wait(timeout=30)
+            process.wait(timeout=30)
 
+        failure = None
         try:
-            process, (base, status, authorization) = launch()
+            process, (base, status, authorization) = launch(initial=True)
             config = json.loads((home / 'config.json').read_text(encoding='utf-8'))
             registration = Registration(root, home, config['id'])
             cap = json.loads((home / 'secrets/first-account.json').read_text(encoding='utf-8'))['token']
@@ -301,12 +311,19 @@ def run(package, result):
             checks.append('native API removes only captured registration after OS-launched process exit')
             assert all((home / name).read_bytes() == data for name, data in preserved.items())
             stop(process)
+        except BaseException as error:
+            failure = error
+            raise
         finally:
             try:
                 for process in processes:
                     stop(process)
                 if registration is not None and not removed:
                     registration.emergency_remove()
+            except Exception as cleanup:
+                if failure is None:
+                    raise
+                failure.add_note('Exact startup cleanup unconfirmed: ' + type(cleanup).__name__)
             finally:
                 log.close()
         report = {'passed': True, 'platform': sys.platform, 'package_sha256': hashlib.sha256(package.read_bytes()).hexdigest(), 'checks': checks, 'registration': registration.snapshot, 'cleanup': 'exact UUID registration removed; all fixture processes stopped', 'limits': ['OS manager launch exercised without logging the runner out and in', 'Windows CI runners are recorded by workflow; no claim of every supported OS version', 'No model/provider, production installation or publisher signing operation']}

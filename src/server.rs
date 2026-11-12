@@ -194,13 +194,25 @@ async fn headers(
     if state.config.web_transport == crate::config::WebTransport::LocalHttp {
         let headers = request.headers();
         let expected = state.config.public_url.trim_start_matches("http://");
+        let return_navigation = request.method() == "GET"
+            && request.uri().path() == "/"
+            && headers
+                .get("sec-fetch-mode")
+                .is_some_and(|v| v == "navigate")
+            && headers
+                .get("sec-fetch-dest")
+                .is_some_and(|v| v == "document")
+            && headers
+                .get("sec-fetch-site")
+                .is_some_and(|v| v == "same-site")
+            && !headers.contains_key(header::ORIGIN);
         if headers.get(header::HOST).and_then(|v| v.to_str().ok()) != Some(expected)
             || headers
                 .get(header::ORIGIN)
                 .is_some_and(|v| v.to_str().ok() != Some(state.config.public_url.as_str()))
             || headers
                 .get("sec-fetch-site")
-                .is_some_and(|v| v != "same-origin" && v != "none")
+                .is_some_and(|v| v != "same-origin" && v != "none" && !return_navigation)
         {
             return ApiError::forbidden().into_response();
         }
@@ -814,6 +826,7 @@ pub async fn serve_with_browser(
     listener.set_nonblocking(true)?;
     let port = listener.local_addr()?.port();
     let s = AppState::open(home)?;
+    tokio::spawn(crate::native_update_service::reconcile(s.home.clone()));
     let local = s.config.web_transport == crate::config::WebTransport::LocalHttp;
     let scheme = if local { "http" } else { "https" };
     let _ = rustls::crypto::ring::default_provider().install_default();
