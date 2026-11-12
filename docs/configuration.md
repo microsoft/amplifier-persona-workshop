@@ -66,8 +66,10 @@ The initial verified deployment used Node 22.23.2, Codex CLI 0.165.0 and upstrea
 
 File import accepts up to 20 MB, with up to 2 MB of normalized source text. The
 CLI `import --file` and browser file chooser use the same `file-import` API.
-Python 3 is needed for EML, HTML, DOCX and ODT; PDF extraction also needs
-`pdftotext` (Ubuntu package `poppler-utils`). Extraction runs locally, with bounded
+Native packages include a private interpreter and PDF reader; no system Python
+or document-converter setup is needed. Legacy source installations use Python 3
+for EML, HTML, DOCX and ODT, plus `pdftotext` (Ubuntu package `poppler-utils`) for
+PDFs. Extraction runs locally, with bounded
 output and a timeout. It does not follow links or run document macros. HTML
 scripts, styles and blockquotes are excluded. EML prefers the plain MIME body,
 uses its sender label, and excludes quoted reply history. The preview remains
