@@ -3,7 +3,10 @@
 <a id="find-the-persona-workshop-boundary"></a>
 
 The [vision](VISION.md) explains the value. Two local boundaries carry the promises
-specific to this component; choose the one your change affects.
+specific to this component; choose the one your change affects. The workbench
+provides an [Experience](https://github.com/microsoft/amplifier-constellation/blob/main/contracts/experience.md);
+service operations provide [Tool capabilities](https://github.com/microsoft/amplifier-constellation/blob/main/contracts/tool.md).
+Profiles are versioned artifacts used by agents, not Agent Instances themselves.
 
 | Agreement | What a consumer can rely on |
 | --- | --- |
