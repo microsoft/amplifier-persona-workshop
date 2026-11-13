@@ -1,7 +1,7 @@
 # Working on Persona Workshop
 
 Read `docs/VISION.md` and `docs/contracts.md`, then the exact local interface needed
-for the next outcome. Shared promises live in the [six Constellation agreements](https://github.com/microsoft/amplifier-constellation/blob/main/contracts/README.md);
+for the next outcome. Shared promises live in the [Constellation boundary and shared agreements](https://github.com/microsoft/amplifier-constellation/blob/main/contracts/README.md);
 link them rather than copying them into local guidance. Use [Converge](https://github.com/microsoft/amplifier-converge)
 for ownership, changes and verification.
 

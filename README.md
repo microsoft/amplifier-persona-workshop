@@ -9,7 +9,9 @@ Import text/Markdown meeting transcripts, chats, notes, normalized JSON chat rec
 Read the [vision](docs/VISION.md) for the intended value and the
 [contract map](docs/contracts.md) for the boundaries a contribution may change.
 The workbench is reference access to reusable service capabilities, not a fixed
-future product UX. Shared promises stay in the
+future product UX. Its service operations can be reused as
+[Tools](https://github.com/microsoft/amplifier-constellation/blob/main/contracts/tool.md);
+profiles are portable guidance, not independent agents. Shared promises stay in the
 [Constellation family](https://github.com/microsoft/amplifier-constellation/blob/main/contracts/composition.md);
 [working together](https://github.com/microsoft/amplifier-constellation/blob/main/docs/working-together.md)
 explains the Converge practice used for contributions.

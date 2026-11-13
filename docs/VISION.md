@@ -18,9 +18,14 @@ and judging examples; agents assist with evidence processing and preparation.
 A saved profile can then be deliberately applied to an existing agent or exported
 to another workspace. It supplies guidance, not identity or permission.
 
-Evidence curation, profile construction, evaluation and export are reusable service
-capabilities. Different experiences can compose them; the current workbench does
-not define the future product UX.
+Persona Workshop combines an
+[Experience](https://github.com/microsoft/amplifier-constellation/blob/main/contracts/experience.md)
+for curating and judging guidance with reusable
+[Tool capabilities](https://github.com/microsoft/amplifier-constellation/blob/main/contracts/tool.md)
+for profile construction, evaluation and export. Other experiences can use the same
+saved versions through the service API. A profile is a portable artifact, not a new
+Agent Instance or a copy of the person. Consumers choose how guidance fits their
+internal design; the current workbench does not prescribe another product's UX.
 
 Judge success separately at three levels: the profile loads correctly, a response
 uses its guidance, and the intended person finds the result faithful and useful.
