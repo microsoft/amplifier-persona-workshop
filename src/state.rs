@@ -43,6 +43,7 @@ impl AppState {
     CREATE TABLE IF NOT EXISTS jobs(id TEXT PRIMARY KEY,project_id TEXT NOT NULL,value TEXT NOT NULL);
     DROP INDEX IF EXISTS one_active_job;
     CREATE UNIQUE INDEX IF NOT EXISTS one_active_build ON jobs(project_id) WHERE json_extract(value,'$.kind')='build' AND json_extract(value,'$.status') IN ('queued','running');
+    CREATE UNIQUE INDEX IF NOT EXISTS job_submission ON jobs(project_id,json_extract(value,'$.submission.actor'),json_extract(value,'$.submission.request_id')) WHERE json_extract(value,'$.submission.request_id') IS NOT NULL;
     CREATE TABLE IF NOT EXISTS revisions(id TEXT PRIMARY KEY,project_id TEXT NOT NULL,value TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS evaluations(id TEXT PRIMARY KEY,project_id TEXT NOT NULL,value TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS comparisons(id TEXT PRIMARY KEY,project_id TEXT NOT NULL,value TEXT NOT NULL);
@@ -178,14 +179,38 @@ impl AppState {
         Ok(p)
     }
     pub fn enqueue(&self, job: &crate::model::Job) -> ApiResult<()> {
-        self.enqueue_checked(job, None)
+        self.enqueue_job(job, None).map(|_| ())
     }
     pub fn enqueue_evaluation(&self, job: &Job, profile: &Revision) -> ApiResult<()> {
-        self.enqueue_checked(job, Some(profile))
+        self.enqueue_job(job, Some(profile)).map(|_| ())
     }
-    fn enqueue_checked(&self, job: &Job, profile: Option<&Revision>) -> ApiResult<()> {
+    pub fn submitted_job(
+        &self,
+        project: &str,
+        actor: &str,
+        request_id: &str,
+    ) -> ApiResult<Option<Job>> {
+        submitted_job(&self.db.lock().unwrap(), project, actor, request_id)
+    }
+    pub fn enqueue_job(&self, job: &Job, profile: Option<&Revision>) -> ApiResult<Option<Job>> {
         let mut db = self.db.lock().unwrap();
         let tx = db.transaction()?;
+        if let Some(submission) = &job.submission
+            && let Some(prior) = submitted_job(
+                &tx,
+                &job.project_id,
+                &submission.actor,
+                &submission.request_id,
+            )?
+        {
+            if prior.submission.as_ref() != Some(submission) {
+                return Err(ApiError(
+                    axum::http::StatusCode::CONFLICT,
+                    "This request ID already names a different job submission".into(),
+                ));
+            }
+            return Ok(Some(prior));
+        }
         let revision: i64 = tx.query_row(
             "SELECT json_extract(value,'$.revision') FROM projects WHERE id=?1",
             [&job.project_id],
@@ -228,7 +253,7 @@ impl AppState {
             params![job.id, job.project_id, serde_json::to_string(job).unwrap()],
         )?;
         tx.commit()?;
-        Ok(())
+        Ok(None)
     }
     pub fn save_build(
         &self,
@@ -448,4 +473,18 @@ pub fn validate_project(alias: &str, purpose: &str, aliases: &[String]) -> ApiRe
         return Err(ApiError::bad("Use a short display name and author labels"));
     }
     Ok(())
+}
+
+fn submitted_job(
+    db: &Connection,
+    project: &str,
+    actor: &str,
+    request_id: &str,
+) -> ApiResult<Option<Job>> {
+    let raw: Option<String> = db.query_row(
+        "SELECT value FROM jobs WHERE project_id=?1 AND json_extract(value,'$.submission.actor')=?2 AND json_extract(value,'$.submission.request_id')=?3",
+        params![project, actor, request_id], |row| row.get(0),
+    ).optional()?;
+    raw.map(|value| serde_json::from_str(&value).map_err(|_| ApiError::bad("Invalid job record")))
+        .transpose()
 }

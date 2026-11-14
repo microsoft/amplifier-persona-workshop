@@ -28,10 +28,14 @@ UI is embedded with `?embed=1`; keep asset and API URLs relative.
 
 ## Candidate and review
 
-- `POST api/v1/projects/{id}/builds` `{expected_revision}` → job `{id,project_id,status,stage,note,created_at}` immediately. Uses configured ACP extractor; imported content is data, not authority.
+- `POST api/v1/projects/{id}/builds` `{expected_revision,request_id?}` → job `{id,project_id,status,stage,note,created_at}` immediately. Uses configured ACP extractor; imported content is data, not authority.
   A completed build atomically saves observations and a compiled profile revision. `job.result_id` is that revision's ID. The UI can open it directly; a separate compile step is not required. Owner rules, reviewed observations and manually edited pending observations survive rebuilds.
 - `GET api/v1/jobs/{id}` → job; status `queued`, `running`, `complete`, `failed`, `cancelled`, `stale`, or `interrupted`.
 - `POST api/v1/jobs/{id}/cancel` `{}` → job.
+- The descriptor advertises `job-submission-recovery` when the following keyed build/evaluation and exact lookup behavior is supported. Clients must check this capability before relying on recovery; older services may ignore unknown request fields.
+- Builds and evaluations accept an optional caller-generated `request_id` (nonempty text, at most 200 bytes). Within one authenticated principal and project, an identical creation request returns the saved job, including its current status and result, without starting another analysis. Reusing that key with different operation inputs returns 409. Different keys can create separate jobs subject to existing project and concurrency checks. Legacy requests without a key retain their existing behavior.
+- `GET api/v1/projects/{id}/jobs?request_id={key}` requires current observe access and looks up that principal's exact retained job: `{outcome:"recorded",job:{...}}` or `{outcome:"unknown",job:null}`. This reads existing job records; it does not create or restart work. An absent record is not proof that an earlier submission had no effects. A retry also rechecks current build authorization. Completed, failed, cancelled, stale and interrupted jobs all remain the same job; a new attempt needs a new creation key and valid inputs.
+- The key binds the submitted operation fields, including the `expected_revision` value. For evaluations, an omitted or explicit `null` revision uses the same default and therefore the same fingerprint. Keep those fields unchanged when recovering a lost reply. A successful build may already have advanced the project revision. Evaluation keys also bind the selected profile revision, scenario and variant. Keys are not human-message IDs and do not impose one job per conversation input.
 - An observation: `{id,collection,section,statement,scope,confidence:{attribution,support,generalization,reason},evidence_ids:[spanIds],conflicts:[spanIds],status:"pending"|"accepted"|"rejected",source:"inferred"|"owner",valid:true}`. `statement` contains up to 3000 characters of runtime guidance; scope/confidence are metadata.
 - Sections: communication `voice`, `phrasing`, `structure`, `tone`, `context`, `editing`; working `framing`, `decisions`, `execution`, `collaboration`, `feedback`, `tradeoffs`. Missing/empty section is general guidance for legacy compatibility.
 - `PUT api/v1/projects/{id}/observations/{oid}` `{expected_revision,status?,section?,statement?,scope?,confidence?}` → project.
@@ -45,7 +49,7 @@ UI is embedded with `?embed=1`; keep asset and API URLs relative.
 
 ## Evaluation
 
-- `POST api/v1/projects/{id}/evaluations` `{revision_id,scenario,variant:"both"|"communication"|"working"|"baseline"}` → job; response is simulated and visibly labeled, never real person approval.
+- `POST api/v1/projects/{id}/evaluations` `{revision_id,scenario,variant:"both"|"communication"|"working"|"baseline",expected_revision?,request_id?}` → job; response is simulated and visibly labeled, never real person approval.
 - Project `evaluations` contains `{id,revision_id,variant,scenario,response,created_at,rating:null|object}`.
 - `PUT api/v1/projects/{id}/evaluations/{eid}` `{expected_revision,rating:{communication_fit?,working_fit?,notes}}` → project. Labels 1–5; no overall fidelity percentage.
 

@@ -9,12 +9,13 @@ use crate::{
 };
 use axum::{
     Json, Router,
-    extract::{DefaultBodyLimit, Path, State},
+    extract::{DefaultBodyLimit, Path, Query, State},
     http::{HeaderMap, StatusCode, header},
     middleware::{self, Next},
     response::{Html, IntoResponse, Response},
     routing::{get, post},
 };
+use serde::Deserialize;
 use serde_json::{Value, json};
 use std::sync::Arc;
 
@@ -108,6 +109,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/agent-targets/{id}/restore", post(agents::restore))
         .route("/api/v1/projects", get(list).post(create))
         .route("/api/v1/projects/{id}", get(read).put(edit))
+        .route("/api/v1/projects/{id}/jobs", get(submitted_job))
         .route("/api/v1/projects/{id}/artifacts", post(import))
         .route("/api/v1/import-capabilities", get(imports::capabilities))
         .route("/api/v1/projects/{id}/file-import", post(imports::upload))
@@ -248,7 +250,7 @@ fn snapshot(s: &AppState, p: &Project) -> ApiResult<Json<Value>> {
 async fn descriptor(State(s): S, h: HeaderMap) -> ApiResult<Json<Value>> {
     auth::check(&s, &h, "observe", false)?;
     Ok(Json(
-        json!({"name":"Persona Workshop","version":env!("CARGO_PKG_VERSION"),"kind":"evidence-to-profile","package_schema":"twin-profile/1","capabilities":["text-import","document-import","recording-provider","blind-comparison","revision-diff","speaker-attribution","two-collections","evidence-review","profile-export","agents-md-export","soul-md-export","agents-md-merge","agent-profile-management","simulation-evaluation","semantic-views"],"ui":"./","embed":"?embed=1","api":"api/v1","contract":"persona-workshop.management/1"}),
+        json!({"name":"Persona Workshop","version":env!("CARGO_PKG_VERSION"),"kind":"evidence-to-profile","package_schema":"twin-profile/1","capabilities":["text-import","document-import","recording-provider","blind-comparison","revision-diff","speaker-attribution","two-collections","evidence-review","profile-export","agents-md-export","soul-md-export","agents-md-merge","agent-profile-management","simulation-evaluation","semantic-views","job-submission-recovery"],"ui":"./","embed":"?embed=1","api":"api/v1","contract":"persona-workshop.management/1"}),
     ))
 }
 async fn status(State(s): S, h: HeaderMap) -> ApiResult<Json<Value>> {
@@ -487,9 +489,17 @@ async fn build(
     Path(id): Path<String>,
     Json(v): Json<Value>,
 ) -> ApiResult<Json<Value>> {
-    auth::check(&s, &h, "build", true)?;
-    let p = s.project(&id)?;
-    Ok(Json(jobs::start(s, p, expected(&v)?, None)?))
+    let who = auth::check(&s, &h, "build", true)?;
+    let submission = job_submission(&v, &who.actor, "build")?;
+    Ok(Json(jobs::recover_or_create(
+        &s,
+        &id,
+        submission.as_ref(),
+        || {
+            let p = s.project(&id)?;
+            jobs::start(s.clone(), p, expected(&v)?, None, submission.clone())
+        },
+    )?))
 }
 async fn job(State(s): S, h: HeaderMap, Path(jid): Path<String>) -> ApiResult<Json<Value>> {
     auth::check(&s, &h, "observe", false)?;
@@ -711,17 +721,25 @@ async fn evaluate(
     Path(id): Path<String>,
     Json(v): Json<Value>,
 ) -> ApiResult<Json<Value>> {
-    auth::check(&s, &h, "build", true)?;
-    let rid = body_string(&v, "revision_id", 100)?;
-    let revision = get_revision(&s, &id, &rid)?;
-    let p = s.project(&id)?;
-    let expected = v["expected_revision"].as_u64().unwrap_or(p.revision);
-    let input = jobs::EvaluationInput {
-        revision,
-        scenario: body_string(&v, "scenario", 12000)?,
-        variant: body_string(&v, "variant", 30)?,
-    };
-    Ok(Json(jobs::start(s, p, expected, Some(input))?))
+    let who = auth::check(&s, &h, "build", true)?;
+    let submission = job_submission(&v, &who.actor, "evaluation")?;
+    Ok(Json(jobs::recover_or_create(
+        &s,
+        &id,
+        submission.as_ref(),
+        || {
+            let rid = body_string(&v, "revision_id", 100)?;
+            let revision = get_revision(&s, &id, &rid)?;
+            let p = s.project(&id)?;
+            let expected = v["expected_revision"].as_u64().unwrap_or(p.revision);
+            let input = jobs::EvaluationInput {
+                revision,
+                scenario: body_string(&v, "scenario", 12000)?,
+                variant: body_string(&v, "variant", 30)?,
+            };
+            jobs::start(s.clone(), p, expected, Some(input), submission.clone())
+        },
+    )?))
 }
 async fn rate(
     State(s): S,
@@ -921,4 +939,48 @@ async fn revoke_token(State(s): S, h: HeaderMap, Path(id): Path<String>) -> ApiR
         .execute("DELETE FROM tokens WHERE id=?1", [&id])?;
     s.audit("access.revoked", None, json!({"actor":actor,"id":id}))?;
     Ok(Json(json!({"revoked":true})))
+}
+
+// Submission identity belongs to the authenticated caller and the actual
+// creation operation, not a global human-message ID.
+fn job_submission(v: &Value, actor: &str, kind: &str) -> ApiResult<Option<JobSubmission>> {
+    let Some(key) = v.get("request_id") else {
+        return Ok(None);
+    };
+    let key = key
+        .as_str()
+        .filter(|key| !key.trim().is_empty() && key.len() <= 200)
+        .ok_or_else(|| ApiError::bad("request_id must be nonempty text up to 200 bytes"))?;
+    let input = if kind == "build" {
+        json!({"kind":kind,"expected_revision":v["expected_revision"]})
+    } else {
+        json!({"kind":kind,"expected_revision":v["expected_revision"],"revision_id":v["revision_id"],"scenario":v["scenario"],"variant":v["variant"]})
+    };
+    Ok(Some(JobSubmission {
+        request_id: key.into(),
+        actor: actor.into(),
+        fingerprint: auth::digest(&input.to_string()),
+    }))
+}
+#[derive(Deserialize)]
+struct SubmissionQuery {
+    request_id: String,
+}
+async fn submitted_job(
+    State(s): S,
+    h: HeaderMap,
+    Path(id): Path<String>,
+    Query(query): Query<SubmissionQuery>,
+) -> ApiResult<Json<Value>> {
+    let who = auth::check(&s, &h, "observe", false)?;
+    if query.request_id.trim().is_empty() || query.request_id.len() > 200 {
+        return Err(ApiError::bad(
+            "request_id must be nonempty text up to 200 bytes",
+        ));
+    }
+    s.project(&id)?;
+    let job = s.submitted_job(&id, &who.actor, &query.request_id)?;
+    Ok(Json(
+        json!({"outcome":if job.is_some() {"recorded"} else {"unknown"},"job":job}),
+    ))
 }
