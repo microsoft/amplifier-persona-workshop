@@ -2049,6 +2049,13 @@ async fn scoped_observation_credentials_cannot_edit_or_mint_and_revocation_is_im
 #[tokio::test]
 async fn keyed_build_recovers_lost_reply_without_repeating_work() {
     let f = Fixture::new("normal");
+    let descriptor = f.ok("GET", "/api/v1/descriptor", None).await;
+    assert!(
+        descriptor["capabilities"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("job-submission-recovery"))
+    );
     let p = f.project().await;
     let p = f
         .upload(
