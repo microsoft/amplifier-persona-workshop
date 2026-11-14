@@ -69,6 +69,12 @@ pub struct Project {
     pub observations: Vec<Observation>,
     pub identity: BTreeMap<String, String>,
 }
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct JobSubmission {
+    pub request_id: String,
+    pub actor: String,
+    pub fingerprint: String,
+}
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Job {
     pub id: String,
@@ -82,6 +88,8 @@ pub struct Job {
     pub source_revision: u64,
     #[serde(default)]
     pub result_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub submission: Option<JobSubmission>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Revision {

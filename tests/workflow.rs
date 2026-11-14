@@ -1033,6 +1033,7 @@ async fn evaluation_enqueue_tolerates_completed_variants_but_rechecks_identity()
             scenario: "Discuss a reversible experiment.".into(),
             variant: "working".into(),
         }),
+        None,
     )
     .unwrap();
     assert_eq!(f.wait(&next).await["status"], "complete");
@@ -1054,6 +1055,7 @@ async fn evaluation_enqueue_tolerates_completed_variants_but_rechecks_identity()
             scenario: "Discuss a reversible experiment.".into(),
             variant: "both".into(),
         }),
+        None,
     )
     .unwrap_err();
     assert_eq!(rejected.0, StatusCode::CONFLICT);
@@ -2041,5 +2043,147 @@ async fn scoped_observation_credentials_cannot_edit_or_mint_and_revocation_is_im
             .await
             .0,
         StatusCode::UNAUTHORIZED
+    );
+}
+
+#[tokio::test]
+async fn keyed_build_recovers_lost_reply_without_repeating_work() {
+    let f = Fixture::new("normal");
+    let p = f.project().await;
+    let p = f
+        .upload(
+            &p,
+            "Fictional notes",
+            "meeting",
+            "Avery: Use a small reversible experiment.",
+        )
+        .await;
+    let path = format!("{}/builds", project_path(&p));
+    let body = json!({"expected_revision":p["revision"],"request_id":"original-build"});
+    let first = f.ok("POST", &path, Some(body.clone())).await;
+    let finished = f.wait(&first).await;
+    assert_eq!(finished["status"], "complete");
+    // The caller did not receive the first reply. Its exact retry recovers the
+    // original result even though completing the build advanced the project.
+    let recovered = f.ok("POST", &path, Some(body.clone())).await;
+    assert_eq!(recovered["id"], first["id"]);
+    assert_eq!(recovered["result_id"], finished["result_id"]);
+    let lookup = format!("{}/jobs?request_id=original-build", project_path(&p));
+    assert_eq!(f.ok("GET", &lookup, None).await["job"]["id"], first["id"]);
+    let current = f.read(&p).await;
+    let changed = json!({"expected_revision":current["revision"],"request_id":"original-build"});
+    assert_eq!(
+        f.request("POST", &path, Some(changed)).await.0,
+        StatusCode::CONFLICT
+    );
+    assert_eq!(
+        request(&f.app, "GET", &lookup, None, None).await.0,
+        StatusCode::UNAUTHORIZED
+    );
+    let reopened = AppState::open(f._home.path().to_owned()).unwrap();
+    let app = server::router(reopened);
+    let (status, retry) = request(&app, "POST", &path, Some(&f.token), Some(body)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(retry["id"], first["id"]);
+    assert_eq!(
+        f.state
+            .records("jobs", p["id"].as_str().unwrap())
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn keyed_jobs_preserve_distinct_intents_and_current_authorization() {
+    let f = Fixture::new("normal");
+    let p = f.project().await;
+    let p = f.owner_preference(&p).await;
+    let r = f.compile(&p).await;
+    let path = format!("{}/evaluations", project_path(&p));
+    // Omitted expected_revision remains omitted in the operation identity.
+    let body = json!({"request_id":"evaluation-a","revision_id":r["id"],"scenario":"A reversible experiment","variant":"communication"});
+    let (a, b) = tokio::join!(
+        f.ok("POST", &path, Some(body.clone())),
+        f.ok("POST", &path, Some(body.clone()))
+    );
+    assert_eq!(a["id"], b["id"]);
+    let finished = f.wait(&a).await;
+    assert_eq!(finished["status"], "complete");
+    assert_eq!(f.ok("POST", &path, Some(body.clone())).await["id"], a["id"]);
+    let mut changed = body.clone();
+    changed["scenario"] = json!("Different question");
+    assert_eq!(
+        f.request("POST", &path, Some(changed)).await.0,
+        StatusCode::CONFLICT
+    );
+    let mut next = body.clone();
+    next["request_id"] = json!("evaluation-b");
+    let second = f.ok("POST", &path, Some(next)).await;
+    assert_ne!(second["id"], a["id"]);
+    assert_eq!(f.wait(&second).await["status"], "complete");
+    let lookup = format!("{}/jobs?request_id=evaluation-a", project_path(&p));
+    f.state
+        .db
+        .lock()
+        .unwrap()
+        .execute("DELETE FROM tokens WHERE id='local-control'", [])
+        .unwrap();
+    assert_eq!(
+        f.request("POST", &path, Some(body)).await.0,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        f.request("GET", &lookup, None).await.0,
+        StatusCode::UNAUTHORIZED
+    );
+}
+
+#[tokio::test]
+async fn keyed_interrupted_job_is_inspected_never_resubmitted() {
+    let f = Fixture::new("normal");
+    let p = f.project().await;
+    let p = f
+        .upload(
+            &p,
+            "Fictional notes",
+            "meeting",
+            "Avery: Compare the evidence.",
+        )
+        .await;
+    let path = format!("{}/builds", project_path(&p));
+    let body = json!({"request_id":"recover-after-restart","expected_revision":p["revision"]});
+    let first = f.ok("POST", &path, Some(body.clone())).await;
+    f.wait(&first).await;
+    // Simulate a durable queued record with no terminal result at service loss.
+    f.state.db.lock().unwrap().execute("UPDATE jobs SET value=json_set(value,'$.status','queued','$.result_id',NULL) WHERE id=?1",[first["id"].as_str().unwrap()]).unwrap();
+    let reopened = AppState::open(f._home.path().to_owned()).unwrap();
+    let app = server::router(reopened.clone());
+    let (status, recovered) = request(&app, "POST", &path, Some(&f.token), Some(body)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(recovered["id"], first["id"]);
+    assert_eq!(recovered["status"], "interrupted");
+    assert!(recovered["result_id"].is_null());
+    assert!(reopened.running.lock().unwrap().is_empty());
+    let missing = format!("{}/jobs?request_id=never-retained", project_path(&p));
+    assert_eq!(
+        request(&app, "GET", &missing, Some(&f.token), None).await.1["outcome"],
+        "unknown"
+    );
+    // Another valid principal cannot adopt the original caller's request key.
+    let token = auth::random_token();
+    reopened
+        .db
+        .lock()
+        .unwrap()
+        .execute(
+            "INSERT INTO tokens VALUES(?1,'other-caller','[\"observe\"]',?2)",
+            rusqlite::params![auth::digest(&token), now_ms() + 60_000],
+        )
+        .unwrap();
+    let lookup = format!("{}/jobs?request_id=recover-after-restart", project_path(&p));
+    assert_eq!(
+        request(&app, "GET", &lookup, Some(&token), None).await.1["outcome"],
+        "unknown"
     );
 }

@@ -221,6 +221,7 @@ pub async fn start(
         updated_at: now_ms(),
         source_revision: p.revision,
         result_id: None,
+        submission: None,
     };
     let c = Comparison {
         id: id(),

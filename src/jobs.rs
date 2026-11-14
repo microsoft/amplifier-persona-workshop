@@ -19,6 +19,7 @@ pub fn start(
     p: Project,
     expected: u64,
     evaluation: Option<EvaluationInput>,
+    submission: Option<JobSubmission>,
 ) -> ApiResult<Value> {
     if expected != p.revision {
         return Err(ApiError(
@@ -52,12 +53,13 @@ pub fn start(
         updated_at: now_ms(),
         source_revision: p.revision,
         result_id: None,
+        submission,
     };
     let response = json!(job);
-    if let Some(input) = &evaluation {
-        state.enqueue_evaluation(&job, &input.revision)?;
-    } else {
-        state.enqueue(&job)?;
+    if let Some(prior) =
+        state.enqueue_job(&job, evaluation.as_ref().map(|input| &input.revision))?
+    {
+        return Ok(json!(prior));
     }
     let (cancel, mut rx) = watch::channel(false);
     state.running.lock().unwrap().insert(job.id.clone(), cancel);
