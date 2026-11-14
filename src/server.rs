@@ -491,11 +491,15 @@ async fn build(
 ) -> ApiResult<Json<Value>> {
     let who = auth::check(&s, &h, "build", true)?;
     let submission = job_submission(&v, &who.actor, "build")?;
-    if let Some(prior) = recover_submission(&s, &id, submission.as_ref())? {
-        return Ok(Json(json!(prior)));
-    }
-    let p = s.project(&id)?;
-    Ok(Json(jobs::start(s, p, expected(&v)?, None, submission)?))
+    Ok(Json(jobs::recover_or_create(
+        &s,
+        &id,
+        submission.as_ref(),
+        || {
+            let p = s.project(&id)?;
+            jobs::start(s.clone(), p, expected(&v)?, None, submission.clone())
+        },
+    )?))
 }
 async fn job(State(s): S, h: HeaderMap, Path(jid): Path<String>) -> ApiResult<Json<Value>> {
     auth::check(&s, &h, "observe", false)?;
@@ -719,19 +723,23 @@ async fn evaluate(
 ) -> ApiResult<Json<Value>> {
     let who = auth::check(&s, &h, "build", true)?;
     let submission = job_submission(&v, &who.actor, "evaluation")?;
-    if let Some(prior) = recover_submission(&s, &id, submission.as_ref())? {
-        return Ok(Json(json!(prior)));
-    }
-    let rid = body_string(&v, "revision_id", 100)?;
-    let revision = get_revision(&s, &id, &rid)?;
-    let p = s.project(&id)?;
-    let expected = v["expected_revision"].as_u64().unwrap_or(p.revision);
-    let input = jobs::EvaluationInput {
-        revision,
-        scenario: body_string(&v, "scenario", 12000)?,
-        variant: body_string(&v, "variant", 30)?,
-    };
-    Ok(Json(jobs::start(s, p, expected, Some(input), submission)?))
+    Ok(Json(jobs::recover_or_create(
+        &s,
+        &id,
+        submission.as_ref(),
+        || {
+            let rid = body_string(&v, "revision_id", 100)?;
+            let revision = get_revision(&s, &id, &rid)?;
+            let p = s.project(&id)?;
+            let expected = v["expected_revision"].as_u64().unwrap_or(p.revision);
+            let input = jobs::EvaluationInput {
+                revision,
+                scenario: body_string(&v, "scenario", 12000)?,
+                variant: body_string(&v, "variant", 30)?,
+            };
+            jobs::start(s.clone(), p, expected, Some(input), submission.clone())
+        },
+    )?))
 }
 async fn rate(
     State(s): S,
@@ -953,26 +961,6 @@ fn job_submission(v: &Value, actor: &str, kind: &str) -> ApiResult<Option<JobSub
         actor: actor.into(),
         fingerprint: auth::digest(&input.to_string()),
     }))
-}
-fn recover_submission(
-    s: &AppState,
-    project: &str,
-    submission: Option<&JobSubmission>,
-) -> ApiResult<Option<Job>> {
-    let Some(submission) = submission else {
-        return Ok(None);
-    };
-    let prior = s.submitted_job(project, &submission.actor, &submission.request_id)?;
-    if prior
-        .as_ref()
-        .is_some_and(|job| job.submission.as_ref() != Some(submission))
-    {
-        return Err(ApiError(
-            StatusCode::CONFLICT,
-            "This request ID already names a different job submission".into(),
-        ));
-    }
-    Ok(prior)
 }
 #[derive(Deserialize)]
 struct SubmissionQuery {

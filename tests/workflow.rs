@@ -2194,3 +2194,153 @@ async fn keyed_interrupted_job_is_inspected_never_resubmitted() {
         "unknown"
     );
 }
+
+async fn forced_keyed_creation_race(evaluation: bool) {
+    use persona_workshop::{error::ApiError, jobs, model::JobSubmission};
+    let f = Fixture::new("normal");
+    let p = f.project().await;
+    let (p, revision, path, body) = if evaluation {
+        let p = f.owner_preference(&p).await;
+        let revision = f.compile(&p).await;
+        let body = json!({"request_id":"forced-race","revision_id":revision["id"],"scenario":"Check the evidence","variant":"working"});
+        let path = format!("{}/evaluations", project_path(&p));
+        (p, Some(revision), path, body)
+    } else {
+        let p = f
+            .upload(
+                &p,
+                "Fictional notes",
+                "meeting",
+                "Avery: Use a reversible experiment.",
+            )
+            .await;
+        let body = json!({"request_id":"forced-race","expected_revision":p["revision"]});
+        let path = format!("{}/builds", project_path(&p));
+        (p, None, path, body)
+    };
+    let input = if evaluation {
+        json!({"kind":"evaluation","expected_revision":body["expected_revision"],"revision_id":body["revision_id"],"scenario":body["scenario"],"variant":body["variant"]})
+    } else {
+        json!({"kind":"build","expected_revision":body["expected_revision"]})
+    };
+    let submission = JobSubmission {
+        request_id: "forced-race".into(),
+        actor: "token:local-control".into(),
+        fingerprint: auth::digest(&input.to_string()),
+    };
+    let state = f.state.clone();
+    let project = p["id"].as_str().unwrap().to_owned();
+    let old_revision = p["revision"].as_u64().unwrap();
+    let app = f.app.clone();
+    let token = f.token.clone();
+    let (missed, lookup_missed) = tokio::sync::oneshot::channel();
+    let (release, wait_for_first) = std::sync::mpsc::channel();
+    let retry = tokio::task::spawn_blocking(move || {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            format!("Bearer {token}").parse().unwrap(),
+        );
+        let who = auth::check(&state, &headers, "build", true).unwrap();
+        assert_eq!(who.actor, submission.actor);
+        jobs::recover_or_create(&state, &project, Some(&submission), || {
+            // Entered only after the shared first lookup missed. The competing
+            // authorized HTTP request must finish before new-work validation.
+            missed.send(()).unwrap();
+            wait_for_first
+                .recv_timeout(Duration::from_secs(10))
+                .unwrap();
+            if let Some(revision) = revision {
+                let path = format!(
+                    "/api/v1/projects/{project}/revisions/{}",
+                    revision["id"].as_str().unwrap()
+                );
+                let (status, _) = tokio::runtime::Handle::current().block_on(request(
+                    &app,
+                    "GET",
+                    &path,
+                    Some(&token),
+                    None,
+                ));
+                assert_eq!(
+                    status,
+                    StatusCode::CONFLICT,
+                    "Actual profile validation must now refuse the old revision"
+                );
+                Err(ApiError(
+                    status,
+                    "The profile became stale before creation".into(),
+                ))
+            } else {
+                let latest = state.project(&project)?;
+                assert!(
+                    latest.revision > old_revision,
+                    "The first build must advance the project before retry validation"
+                );
+                jobs::start(
+                    state.clone(),
+                    latest,
+                    old_revision,
+                    None,
+                    Some(submission.clone()),
+                )
+            }
+        })
+    });
+    tokio::time::timeout(Duration::from_secs(5), lookup_missed)
+        .await
+        .unwrap()
+        .unwrap();
+    let first = f.ok("POST", &path, Some(body)).await;
+    let finished = f.wait(&first).await;
+    assert_eq!(finished["status"], "complete");
+    if evaluation {
+        let current = f.read(&p).await;
+        let edited = f
+            .state
+            .change(
+                p["id"].as_str().unwrap(),
+                current["revision"].as_u64().unwrap(),
+                |project| {
+                    project.alias = "A newly edited private identity".into();
+                    Ok(())
+                },
+            )
+            .unwrap();
+        f.state.invalidate(&edited).unwrap();
+    }
+    release.send(()).unwrap();
+    let recovered = retry.await.unwrap();
+    let prompts = std::fs::read_dir(&f.endpoint)
+        .unwrap()
+        .flatten()
+        .filter(|e| e.path().extension().is_some_and(|ext| ext == "jsonl"))
+        .flat_map(|e| {
+            std::fs::read_to_string(e.path())
+                .unwrap()
+                .lines()
+                .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+                .collect::<Vec<_>>()
+        })
+        .filter(|v| v["method"] == "session/prompt")
+        .count();
+    assert_eq!(prompts, 1, "Exactly one actual ACP dispatch is allowed");
+    let recovered = recovered.unwrap();
+    assert_eq!(recovered["id"], first["id"]);
+    assert_eq!(recovered["result_id"], finished["result_id"]);
+    assert_eq!(
+        f.state
+            .records("jobs", p["id"].as_str().unwrap())
+            .unwrap()
+            .len(),
+        1
+    );
+}
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn keyed_build_race_recovers_after_lookup_miss_and_revision_change() {
+    forced_keyed_creation_race(false).await;
+}
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn keyed_evaluation_race_recovers_after_lookup_miss_and_profile_invalidation() {
+    forced_keyed_creation_race(true).await;
+}

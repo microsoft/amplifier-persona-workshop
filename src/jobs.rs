@@ -157,3 +157,49 @@ pub fn cancel(state: &AppState, id: &str) -> ApiResult<Value> {
     }
     Ok(job)
 }
+
+/// Recover a keyed creation before starting new work and before returning a
+/// new-work validation error. Callers authenticate before entering this boundary.
+pub fn recover_or_create(
+    state: &AppState,
+    project: &str,
+    submission: Option<&JobSubmission>,
+    create: impl FnOnce() -> ApiResult<Value>,
+) -> ApiResult<Value> {
+    if let Some(prior) = recover_submission(state, project, submission)? {
+        return Ok(json!(prior));
+    }
+    match create() {
+        Ok(job) => Ok(job),
+        Err(error) => {
+            // Another authorized request may have retained this exact creation
+            // after the first lookup, before project/profile validation failed.
+            // Recover that record; a new-work refusal must not hide its outcome.
+            match recover_submission(state, project, submission)? {
+                Some(prior) => Ok(json!(prior)),
+                None => Err(error),
+            }
+        }
+    }
+}
+
+fn recover_submission(
+    s: &AppState,
+    project: &str,
+    submission: Option<&JobSubmission>,
+) -> ApiResult<Option<Job>> {
+    let Some(submission) = submission else {
+        return Ok(None);
+    };
+    let prior = s.submitted_job(project, &submission.actor, &submission.request_id)?;
+    if prior
+        .as_ref()
+        .is_some_and(|job| job.submission.as_ref() != Some(submission))
+    {
+        return Err(ApiError(
+            axum::http::StatusCode::CONFLICT,
+            "This request ID already names a different job submission".into(),
+        ));
+    }
+    Ok(prior)
+}
