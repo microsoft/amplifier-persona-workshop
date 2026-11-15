@@ -34,7 +34,7 @@ def main():
     name='twin-workbench-adoption-fixture-'+str(uuid.uuid4())+'.service'
     definitions=Path(os.environ.get('XDG_CONFIG_HOME',str(Path.home()/'.config')))/'systemd/user'
     definition=definitions/name;assert not definition.exists();plans=[];retired_plans=set();checks=[]
-    record={'fixture':str(root),'service':name,'package_sha256':digest(a.package),'legacy_sha256':digest(a.legacy_binary),'worker_source_sha256':digest(ROOT/'scripts/native_update.py'),'injected_candidate_start_failure':a.fail_start,'passed':False}
+    record={'fixture':str(root),'service':name,'package_sha256':digest(a.package),'legacy_sha256':digest(a.legacy_binary),'worker_source_sha256':digest(ROOT/'scripts/native_update.py'),'fixture_source_sha256':digest(Path(__file__)),'injected_candidate_start_failure':a.fail_start,'passed':False}
     try:
         with tarfile.open(a.package) as archive:archive.extractall(download,filter='data')
         binary.chmod(0o700)
