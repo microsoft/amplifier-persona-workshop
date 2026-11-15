@@ -95,6 +95,18 @@ jobs:
           package=$(python -c 'import pathlib; print(next(p for p in pathlib.Path("dist").iterdir() if p.name.endswith((".zip", ".tar.gz"))))')
           python tests/native_update_process.py --package "$package" --storage-helper "$helper" --result dist/native-update-${{ matrix.target }}.json
           python tests/native_update_process.py --package "$package" --storage-helper "$helper" --managed --result dist/native-managed-update-${{ matrix.target }}.json
+      - name: Adopt actual legacy PAM HTTPS service and retain normal updates
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          legacy_source="$RUNNER_TEMP/workshop-legacy-source"
+          legacy_target="$RUNNER_TEMP/workshop-legacy-target"
+          git fetch --no-tags origin 6bddefcfc1b3e43a56006076405897084619f2f3
+          git worktree add --detach "$legacy_source" 6bddefcfc1b3e43a56006076405897084619f2f3
+          cargo +1.93.0 build --locked --manifest-path "$legacy_source/Cargo.toml" --target-dir "$legacy_target" --bin persona-workshop
+          legacy_binary="$legacy_target/$CARGO_BUILD_TARGET/debug/persona-workshop"
+          package=$(python -c 'import pathlib; print(next(p for p in pathlib.Path("dist").iterdir() if p.name.endswith(".tar.gz")))')
+          python tests/legacy_adoption_process.py --package "$package" --legacy-binary "$legacy_binary" --output dist/legacy-adoption.json
+          python tests/legacy_adoption_process.py --package "$package" --legacy-binary "$legacy_binary" --fail-start --output dist/legacy-adoption-rollback.json
       - uses: actions/setup-node@v4
         if: matrix.target == 'x86_64-unknown-linux-gnu'
         with:
@@ -124,7 +136,9 @@ jobs:
         if: failure()
         with:
           name: native-persona-failure-${{ matrix.target }}
-          path: dist/*.failure.json
+          path: |
+            dist/*.failure.json
+            dist/legacy-adoption*.json
           if-no-files-found: ignore
       - uses: actions/upload-artifact@v4
         with:

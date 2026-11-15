@@ -876,9 +876,21 @@ pub async fn serve_with_browser(
     let tls =
         axum_server::tls_rustls::RustlsConfig::from_pem_file(&s.config.tls_cert, &s.config.tls_key)
             .await?;
-    axum_server::from_tcp_rustls(listener, tls)?
+    let handle = axum_server::Handle::new();
+    let shutdown_handle = handle.clone();
+    let shutdown = s.update_shutdown.clone();
+    s.update_shutdown_available
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let shutdown_task = tokio::spawn(async move {
+        shutdown.notified().await;
+        shutdown_handle.graceful_shutdown(Some(std::time::Duration::from_secs(15)));
+    });
+    let result = axum_server::from_tcp_rustls(listener, tls)?
+        .handle(handle)
         .serve(router(s).into_make_service())
-        .await?;
+        .await;
+    shutdown_task.abort();
+    result?;
     Ok(())
 }
 

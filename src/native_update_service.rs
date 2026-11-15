@@ -214,6 +214,13 @@ fn verify_profile(home: &Path, execution: &Execution, observation: &Value) -> Re
     Ok(())
 }
 fn verify_startup(home: &Path, svc: &manager::Service, observation: &Value) -> Result<()> {
+    if let Some(profile) = crate::native_adoption::legacy(home)? {
+        ensure!(
+            profile["service"] == serde_json::to_value(svc)?,
+            "Legacy service changed"
+        );
+        return crate::native_adoption::verify_profile(home, &profile, observation);
+    }
     #[cfg(not(target_os = "macos"))]
     let _ = svc;
     let binary = platform::installed_binary(&APPLICATION, home);
@@ -299,6 +306,17 @@ fn registered(
     })
 }
 fn application(home: &Path, installation_id: &str) -> Result<Execution> {
+    if let Some(profile) = crate::native_adoption::legacy(home)? {
+        let svc: manager::Service = serde_json::from_value(profile["service"].clone())?;
+        let baseline = manager::snapshot(&svc)?;
+        crate::native_adoption::verify_profile(home, &profile, &baseline)?;
+        return Ok(Execution {
+            service: svc,
+            profile: None,
+            baseline,
+            startup_home: None,
+        });
+    }
     let startup = service(home, format!("persona-workshop-{installation_id}"))?;
     // Original Windows startup XML is merely a retained export; the native task
     // is authoritative. A missing task is distinct from a failed observation.
@@ -428,41 +446,63 @@ pub fn prepare(home: &Path, plan: &str) -> Result<()> {
             baseline: Value::Null,
             startup_home: None,
         };
-        let status = tokio::runtime::Handle::try_current()?
-            .block_on(crate::desktop::local_api(home, "GET", "status", None));
-        let original_application = match status {
-            Ok(status) => {
-                ensure!(
-                    status["id"] == cfg.id,
-                    "A different application answered before update preparation"
-                );
-                process::identity(u32::try_from(
-                    status["pid"]
+        let original_application = if j["legacy_adoption"] == true
+            && !home.join("native-installation.json").exists()
+            && j["critical_recovery"] != true
+        {
+            let legacy = crate::native_adoption::legacy(home)?.context("Missing legacy origin")?;
+            crate::native_adoption::stopped(home, &legacy)?;
+            crate::native_adoption::settled_jobs(home)?;
+            legacy["baseline"]["processes"]
+                .as_array()
+                .context("Missing original processes")?
+                .iter()
+                .find(|p| {
+                    p["identity"]["pid"]
                         .as_u64()
-                        .context("Missing application process")?,
-                )?)?
-                .context("Original application generation disappeared")?
+                        .map(|n| n.to_string())
+                        .as_deref()
+                        == legacy["baseline"]["native"]["MainPID"].as_str()
+                })
+                .context("Missing captured original application")?["identity"]
+                .clone()
+        } else {
+            match tokio::runtime::Handle::try_current()?
+                .block_on(crate::desktop::local_api(home, "GET", "status", None))
+            {
+                Ok(status) => {
+                    ensure!(
+                        status["id"] == cfg.id,
+                        "A different application answered before update preparation"
+                    );
+                    process::identity(u32::try_from(
+                        status["pid"]
+                            .as_u64()
+                            .context("Missing application process")?,
+                    )?)?
+                    .context("Original application generation disappeared")?
+                }
+                Err(error) if j["critical_recovery"] == true => {
+                    let previous = j["previous_request_id"]
+                        .as_str()
+                        .context("Recovery has no captured prior application")?;
+                    let retained: Binding = serde_json::from_value(read(
+                        &dispatch(home, plan, previous)?.join("manager.json"),
+                    )?)?;
+                    ensure!(
+                        retained.schema == 1
+                            && retained.plan_id == plan
+                            && retained.request_id == previous
+                            && retained.installation_id == cfg.id,
+                        "Recovery application identity changed: {error}"
+                    );
+                    // The original process identity remains attributable even when
+                    // the listener is gone. Stop/settlement still require that exact
+                    // generation or the prior immutable native launch claim.
+                    retained.original_application
+                }
+                Err(error) => return Err(error),
             }
-            Err(error) if j["critical_recovery"] == true => {
-                let previous = j["previous_request_id"]
-                    .as_str()
-                    .context("Recovery has no captured prior application")?;
-                let retained: Binding = serde_json::from_value(read(
-                    &dispatch(home, plan, previous)?.join("manager.json"),
-                )?)?;
-                ensure!(
-                    retained.schema == 1
-                        && retained.plan_id == plan
-                        && retained.request_id == previous
-                        && retained.installation_id == cfg.id,
-                    "Recovery application identity changed: {error}"
-                );
-                // The original process identity remains attributable even when
-                // the listener is gone. Stop/settlement still require that exact
-                // generation or the prior immutable native launch claim.
-                retained.original_application
-            }
-            Err(error) => return Err(error),
         };
         let planned = Binding {
             schema: 1,
@@ -727,7 +767,7 @@ pub fn start_application(home: &Path, plan: &str, nonce: &str) -> Result<Value> 
         .as_str()
         .context("Missing launch digest")?;
     ensure!(
-        hash(&platform::installed_binary(&APPLICATION, home))? == expected,
+        hash(&crate::native_adoption::installed_binary(home)?)? == expected,
         "Application image changed"
     );
     ensure!(
@@ -1297,11 +1337,35 @@ pub fn command(
             nonce.context("Missing launch nonce")?,
             pid.context("Missing app process")?,
         ),
+        "observe-legacy" => {
+            let j = job(home, plan)?;
+            ensure!(
+                j["legacy_adoption"] == true && j["state"] == "rolling_back",
+                "Only the observed legacy rollback can use this proof"
+            );
+            let profile =
+                crate::native_adoption::legacy(home)?.context("Missing original service")?;
+            let svc: manager::Service = serde_json::from_value(profile["service"].clone())?;
+            let snapshot = manager::snapshot(&svc)?;
+            crate::native_adoption::verify_profile(home, &profile, &snapshot)?;
+            let pid: u32 = snapshot["native"]["MainPID"]
+                .as_str()
+                .context("Missing legacy process")?
+                .parse()?;
+            observe_application(home, plan, nonce.context("Missing launch nonce")?, pid)
+        }
         "authorize-stop" => authorize_stop(home, plan, pid.context("Missing application PID")?),
         "stop" => stop_application(home, plan, nonce.context("Missing launch nonce")?),
         "stopped" => {
             wait_application_stopped(home, plan)?;
             Ok(json!({"inactive":true}))
+        }
+        "adoption-stopped" => {
+            let profile =
+                crate::native_adoption::legacy(home)?.context("No original service binding")?;
+            crate::native_adoption::stopped(home, &profile)?;
+            crate::native_adoption::settled_jobs(home)?;
+            Ok(json!({"inactive":true,"settled":true}))
         }
         "retire-worker" => cleanup(home, plan, false),
         "retire-runtime" => cleanup(home, plan, true),

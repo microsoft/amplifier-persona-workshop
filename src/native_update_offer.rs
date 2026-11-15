@@ -39,7 +39,7 @@ pub fn different_download(home: &Path) -> Result<bool> {
     {
         return Ok(false);
     }
-    let installed = platform::installed_binary(&desktop::APPLICATION, home);
+    let installed = crate::native_adoption::installed_binary(home)?;
     let current = std::env::current_exe()?;
     if current.canonicalize()? == installed.canonicalize()? {
         return Ok(false);

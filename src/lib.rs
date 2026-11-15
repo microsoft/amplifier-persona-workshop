@@ -8,6 +8,7 @@ pub mod evidence;
 pub mod imports;
 pub mod jobs;
 pub mod model;
+pub mod native_adoption;
 pub mod native_update;
 pub mod native_update_offer;
 pub mod native_update_service;
