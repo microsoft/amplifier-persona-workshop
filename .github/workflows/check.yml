@@ -136,7 +136,9 @@ jobs:
         if: failure()
         with:
           name: native-persona-failure-${{ matrix.target }}
-          path: dist/*.failure.json
+          path: |
+            dist/*.failure.json
+            dist/legacy-adoption*.json
           if-no-files-found: ignore
       - uses: actions/upload-artifact@v4
         with:
