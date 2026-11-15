@@ -60,6 +60,27 @@ need human review; generated examples are not automatically treated as evidence.
 - [Profile content](docs/profile-content.md) and [API/automation](docs/ui-api-contract.md)
 - [Contributor entry](AGENTS.md)
 
+
+<!-- ecosystem-map:start -->
+## Where this fits
+
+A profile-authoring experience that exports guidance or applies reviewed profiles through agent management.
+
+Roles: Experience. Supports: Agent Instance.
+
+![Ecosystem roles and component relationships](docs/ecosystem-map.svg)
+
+[Open the map](docs/ecosystem-map.svg) · [Product overview](https://microsoft.github.io/amplifier-constellation/projects/amplifier-persona-workshop/) · [Map guide](https://github.com/microsoft/amplifier-constellation/blob/main/docs/ecosystem-maps.md)
+
+<details>
+<summary>The five shared building blocks</summary>
+
+[![Experience, Conversation, Agent Instance, Connection and Tool](https://raw.githubusercontent.com/microsoft/amplifier-constellation/main/site/assets/art/building-blocks.png)](https://microsoft.github.io/amplifier-constellation/)
+
+</details>
+
+<!-- ecosystem-map:end -->
+
 ## Contributing
 
 Invited collaborators: follow [Join the work](https://github.com/microsoft/amplifier-constellation#join-the-work)

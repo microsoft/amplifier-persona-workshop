@@ -1,0 +1,100 @@
+{
+  "audience": "People tailoring an agent’s communication and working style",
+  "citations": [
+    {
+      "path": "README.md",
+      "ref": "991bb420de564ffb1a4c96ea86728b46242f076b",
+      "sha256": "685a55683e8aa845d75c7d87a75012432d77d259a886393ea15b032976736963",
+      "url": "https://github.com/microsoft/amplifier-persona-workshop/blob/991bb420de564ffb1a4c96ea86728b46242f076b/README.md"
+    },
+    {
+      "path": "docs/ui-api-contract.md",
+      "ref": "991bb420de564ffb1a4c96ea86728b46242f076b",
+      "sha256": "d685f7d658d81bc898b2a547a0fe34d204444aac39cf751184a131f2876df360",
+      "url": "https://github.com/microsoft/amplifier-persona-workshop/blob/991bb420de564ffb1a4c96ea86728b46242f076b/docs/ui-api-contract.md"
+    }
+  ],
+  "display_name": "Persona Workshop",
+  "edges": [
+    {
+      "from": "self",
+      "relation": "contains",
+      "to": "evidence"
+    },
+    {
+      "from": "self",
+      "relation": "contains",
+      "to": "profiles"
+    },
+    {
+      "from": "self",
+      "relation": "contains",
+      "to": "exports"
+    },
+    {
+      "from": "self",
+      "relation": "uses",
+      "to": "analysis"
+    },
+    {
+      "from": "profiles",
+      "relation": "integrates",
+      "to": "agent"
+    }
+  ],
+  "nodes": [
+    {
+      "id": "self",
+      "kind": "self",
+      "label": "Persona Workshop",
+      "repository": "microsoft/amplifier-persona-workshop"
+    },
+    {
+      "id": "evidence",
+      "kind": "internal",
+      "label": "Selected evidence and attribution"
+    },
+    {
+      "id": "profiles",
+      "kind": "internal",
+      "label": "Reviewed profile revisions"
+    },
+    {
+      "id": "exports",
+      "kind": "internal",
+      "label": "Portable Markdown exports"
+    },
+    {
+      "id": "analysis",
+      "kind": "external",
+      "label": "Optional ACP analysis endpoint"
+    },
+    {
+      "id": "agent",
+      "kind": "external",
+      "label": "Existing managed agent"
+    }
+  ],
+  "notes": [
+    "Profiles guide behavior; they are not a new Agent Instance implementation or verified replica of a person.",
+    "Generic ACP analysis and separately authorized management/profile application are distinct interfaces.",
+    "No Tool conformance claim is inferred solely from having an HTTP API."
+  ],
+  "page_kind": "user-facing app",
+  "purpose": "Turn selected evidence into reviewed, portable communication and working-style profiles.",
+  "ref": "991bb420de564ffb1a4c96ea86728b46242f076b",
+  "repository": "microsoft/amplifier-persona-workshop",
+  "roles": [
+    "Experience"
+  ],
+  "start_cta": {
+    "basis": "Existing approved README route; target release assets/availability not freshly audited in this plan.",
+    "label": "Download Persona Workshop",
+    "url": "https://github.com/microsoft/amplifier-persona-workshop/releases"
+  },
+  "summary": "A profile-authoring experience that exports guidance or applies reviewed profiles through agent management.",
+  "supports_roles": [
+    "Agent Instance"
+  ],
+  "visibility": "public"
+}
