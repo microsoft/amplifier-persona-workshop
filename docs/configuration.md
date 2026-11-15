@@ -189,6 +189,38 @@ worker; an unconfirmed stop preserves the pending state rather than replacing a
 possibly running app. **Restore previous app version** also waits for current
 work. A lost reply is reconciled through status before any explicit retry.
 
-These controls apply to fresh installation-owned native homes. Existing Linux
-service installs and externally managed installations retain their current update
-owner. Installing a native app does not take over those installations.
+These controls apply to installation-owned native homes, including explicitly
+adopted Linux services below. Externally managed installations retain their update
+owner. Opening a native download does not take over an existing service.
+
+### Adopt an existing Linux service
+
+A complete native download can adopt an existing PAM/HTTPS user service while
+retaining its name, executable path, configuration, sign-in and data. The service
+must directly run the executable in that home's `bin` directory, with no unit
+overrides. The operation uses the existing updater and OS service manager.
+
+1. From the unpacked download, capture the running service before maintenance:
+   `persona-workshop --home HOME adopt-existing prepare --service UNIT --binary ORIGINAL_BINARY --request UUID`.
+   Keep the returned plan ID. Preparation leaves the original service running.
+2. Inspect pending effects and let active work settle. Stop that exact service
+   through its existing owner/manager. Older services have no update drain API;
+   this maintenance stop must not be mistaken for a graceful work drain.
+3. Run `persona-workshop --home HOME adopt-existing apply --plan PLAN --request UUID`
+   from the same download. It verifies the original process generation, service
+   children and listener have stopped, takes the existing service lock, and
+   checks again for queued/running jobs before replacement. Historical unknown
+   outcomes remain unchanged and are never replayed.
+
+The plan under `native-updates/PLAN/plan.json` records the result. Repeating a
+request recovers its saved result; it cannot select a different download. An
+interrupted preparation can resume with the same request. A failed start restores
+the original executable through the same service without restoring an older
+project database. A new preparation after verified rollback retains the old plan.
+For an interrupted worker, use `adopt-existing recover --plan PLAN --request UUID`
+from the retained download; unresolved effects remain visible for inspection.
+
+Only verified service health establishes the native installation baseline.
+Subsequent updates use **App updates**, preserving PAM/HTTPS and the original
+service definition and startup preference. Adoption does not register the
+installation with another service or change its configured analysis endpoint.

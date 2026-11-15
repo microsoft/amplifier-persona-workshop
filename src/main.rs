@@ -38,10 +38,15 @@ enum Action {
         extractor_config: Option<PathBuf>,
     },
     Serve,
+    /// Adopt a settled existing Linux user service without changing its sign-in or home.
+    AdoptExisting {
+        #[command(subcommand)]
+        action: AdoptionAction,
+    },
     #[command(hide = true)]
     NativeUpdateManager {
         plan: uuid::Uuid,
-        #[arg(value_parser = ["prepare", "start", "observe", "authorize-stop", "stop", "stopped", "retire-worker", "retire-runtime"])]
+        #[arg(value_parser = ["prepare", "start", "observe", "observe-legacy", "authorize-stop", "stop", "stopped", "adoption-stopped", "retire-worker", "retire-runtime"])]
         operation: String,
         #[arg(long)]
         nonce: Option<uuid::Uuid>,
@@ -96,6 +101,29 @@ enum ConfigAction {
         file: PathBuf,
     },
 }
+#[derive(Subcommand)]
+enum AdoptionAction {
+    Prepare {
+        #[arg(long)]
+        service: String,
+        #[arg(long)]
+        binary: PathBuf,
+        #[arg(long)]
+        request: uuid::Uuid,
+    },
+    Apply {
+        #[arg(long)]
+        plan: uuid::Uuid,
+        #[arg(long)]
+        request: uuid::Uuid,
+    },
+    Recover {
+        #[arg(long)]
+        plan: uuid::Uuid,
+        #[arg(long)]
+        request: uuid::Uuid,
+    },
+}
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
@@ -120,6 +148,38 @@ async fn run(cli: Cli) -> Result<()> {
         return persona_workshop::desktop::launch(home, !cli.no_browser).await;
     };
     match action {
+        Action::AdoptExisting { action } => {
+            let value = tokio::task::spawn_blocking(move || -> Result<serde_json::Value> {
+                Ok(match action {
+                    AdoptionAction::Prepare {
+                        service,
+                        binary,
+                        request,
+                    } => persona_workshop::native_adoption::prepare(
+                        &home,
+                        &service,
+                        &binary,
+                        &request.to_string(),
+                    )?,
+                    AdoptionAction::Apply { plan, request } => {
+                        persona_workshop::native_adoption::apply(
+                            &home,
+                            &plan.to_string(),
+                            &request.to_string(),
+                        )?
+                    }
+                    AdoptionAction::Recover { plan, request } => {
+                        persona_workshop::native_update::recover_local(
+                            &home,
+                            &plan.to_string(),
+                            &request.to_string(),
+                        )?
+                    }
+                })
+            })
+            .await??;
+            println!("{}", value);
+        }
         Action::NativeUpdateManager {
             plan,
             operation,

@@ -7,6 +7,42 @@ from http.server import BaseHTTPRequestHandler,HTTPServer
 ROOT=Path(__file__).resolve().parents[1]
 spec=importlib.util.spec_from_file_location('native_update',ROOT/'scripts/native_update.py');u=importlib.util.module_from_spec(spec);spec.loader.exec_module(u)
 class NativeUpdateTests(unittest.TestCase):
+ def legacy_owner(self):
+  cfg=u.read(self.home/'config.json');cfg.update(auth_mode='pam',web_transport='https',public_url='https://workshop.example',port=443)
+  u.write(self.home/'config.json',cfg)
+  original=self.home/'bin/twin-workbench';self.binary.rename(original);self.binary=original
+  owner={'schema':1,'id':self.agent,'update_owner':'installation','legacy':{'schema':1,'home':str(self.home),'binary':str(original),'service':{'manager':'systemd_user','name':'twin-workbench-'+self.agent+'.service'},'baseline':{'definition_matches':True}}}
+  u.write(self.home/'native-installation.json',owner)
+  return owner
+ @unittest.skipUnless(u.sys.platform=='linux','Existing PAM/HTTPS service adoption is Linux-only')
+ def test_adopted_https_owner_retains_original_binary_and_sign_in(self):
+  owner=self.legacy_owner();before=(self.home/'config.json').read_bytes()
+  worker=self.worker()
+  self.assertEqual(worker.binary,self.binary)
+  self.assertEqual((self.home/'config.json').read_bytes(),before)
+  self.assertEqual(u.read(self.home/'native-installation.json'),owner)
+ @unittest.skipUnless(u.sys.platform=='linux','Existing PAM/HTTPS service adoption is Linux-only')
+ def test_adoption_does_not_accept_another_installation_binary(self):
+  owner=self.legacy_owner();owner['legacy']['binary']=str(self.home.parent/'another/bin/twin-workbench');u.write(self.home/'native-installation.json',owner)
+  with self.assertRaisesRegex(RuntimeError,'legacy_binding_invalid'):self.worker()
+ @unittest.skipUnless(u.sys.platform=='linux','Existing PAM/HTTPS service adoption is Linux-only')
+ def test_failed_first_adoption_removes_only_its_provisional_baseline(self):
+  self.legacy_owner();worker=self.worker();backup=self.folder/'backup';backup.mkdir();(backup/'binary').write_bytes(b'old')
+  marker=u.read(self.home/'native-installation.json');marker['adoption']={'plan_id':self.id};u.write(self.home/'native-installation.json',marker)
+  worker.job.update(previous_sha256=u.digest(backup/'binary'),binary_sha256=u.digest(self.binary),adopting_legacy=True)
+  later=self.home/'newer-evidence';later.write_bytes(b'keep newer evidence')
+  with patch.object(worker,'stop'),patch.object(worker,'replace'),patch.object(worker,'start'),patch.object(worker,'health'):
+   worker.rollback('commit_after_health_failed')
+  self.assertFalse((self.home/'native-installation.json').exists());self.assertEqual(later.read_bytes(),b'keep newer evidence')
+  self.assertEqual(worker.job['state'],'rolled_back')
+ @unittest.skipUnless(u.sys.platform=='linux','Existing PAM/HTTPS service adoption is Linux-only')
+ def test_rollback_never_removes_a_different_adoption_baseline(self):
+  self.legacy_owner();worker=self.worker();backup=self.folder/'backup';backup.mkdir();(backup/'binary').write_bytes(b'old')
+  marker=u.read(self.home/'native-installation.json');marker['adoption']={'plan_id':str(uuid.uuid4())};u.write(self.home/'native-installation.json',marker)
+  worker.job.update(previous_sha256=u.digest(backup/'binary'),binary_sha256=u.digest(self.binary),adopting_legacy=True)
+  with patch.object(worker,'stop'),patch.object(worker,'replace'),patch.object(worker,'start'),patch.object(worker,'health'),self.assertRaisesRegex(RuntimeError,'baseline_changed'):
+   worker.rollback('commit_after_health_failed')
+  self.assertEqual(u.read(self.home/'native-installation.json'),marker)
  def setUp(self):
   self.temp=TemporaryDirectory();self.addCleanup(self.temp.cleanup);self.home=Path(self.temp.name);self.id=str(uuid.uuid4());self.agent=str(uuid.uuid4())
   self.root=self.home/'native-updates';self.folder=self.root/self.id;self.folder.mkdir(parents=True);(self.home/'bin').mkdir();(self.home/'secrets').mkdir();(self.home/'runtime').mkdir()

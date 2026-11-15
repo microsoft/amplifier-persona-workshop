@@ -30,10 +30,10 @@ fn write_journal(path: &Path, value: &Value) -> Result<()> {
 }
 fn allowed(home: &Path) -> Result<()> {
     let c = Config::load(home)?;
-    let marker = read(&home.join("native-installation.json"))?;
+    let marker = crate::native_adoption::owner(home)?;
     ensure!(
-        c.auth_mode == AuthMode::LocalPassword
-            && c.web_transport == WebTransport::LocalHttp
+        ((c.auth_mode == AuthMode::LocalPassword && c.web_transport == WebTransport::LocalHttp)
+            || crate::native_adoption::legacy(home)?.is_some())
             && marker["id"] == c.id
             && marker["update_owner"] == "installation",
         "This installation is not managed by the native app"
@@ -409,7 +409,12 @@ fn queue(home: &Path, input: Command) -> Result<Value> {
     job["worker_request_id"] = json!(input.request_id);
     // The worker runs from its own private Python copy so Windows can replace the installed runtime.
     if !folder.join("worker-runtime").exists() {
-        crate::desktop::copy_runtime(&home.join("runtime"), &folder.join("worker-runtime"))?;
+        let runtime = if job["legacy_adoption"] == true {
+            folder.join("candidate/runtime")
+        } else {
+            home.join("runtime")
+        };
+        crate::desktop::copy_runtime(&runtime, &folder.join("worker-runtime"))?;
     }
     config::private_write(&folder.join("worker.py"), SCRIPT)?;
     write_journal(&folder.join("plan.json"), &job)?;
@@ -496,7 +501,7 @@ pub fn prepare_local(home: &Path, binary: &Path) -> Result<Value> {
         );
     }
     crate::native_update_service::settle_previous(home)?;
-    let installed = amplifier_native_platform::installed_binary(&crate::desktop::APPLICATION, home);
+    let installed = crate::native_adoption::installed_binary(home)?;
     let before_config = digest(&home.join("config.json"))?;
     let before_binary = digest(&installed)?;
     let identifier = uuid::Uuid::new_v4().to_string();
@@ -648,7 +653,9 @@ pub async fn admission(
     .contains(request.method())
         || request.uri().path().starts_with("/api/v1/desktop/")
         || ["/auth/login", "/auth/logout"].contains(&request.uri().path())
-        || state.config.auth_mode != AuthMode::LocalPassword
+        || (state.config.auth_mode != AuthMode::LocalPassword
+            && !state.home.join("native-installation.json").exists()
+            && !state.home.join("native-adoption.json").exists())
     {
         return next.run(request).await;
     }

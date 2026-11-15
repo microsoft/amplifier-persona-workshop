@@ -1,7 +1,7 @@
 """Fixed native Persona release worker. Private stdin-free invocation: home + plan UUID.
 No arbitrary commands, URLs, host operations, model calls, or state rollback.
 """
-import contextlib, hashlib, hmac, http.client, io, json, os, platform, shutil, sqlite3, subprocess, sys, tarfile, time, urllib.request, uuid, zipfile
+import contextlib, hashlib, hmac, http.client, io, json, os, platform, shutil, sqlite3, ssl, subprocess, sys, tarfile, time, urllib.request, uuid, zipfile
 from pathlib import Path, PurePosixPath
 REPO='microsoft/amplifier-persona-workshop'
 CRITICAL={'stopping','swapping','verifying','rolling_back','recovery_required'}
@@ -157,14 +157,38 @@ class Worker:
         self.guard_ownership()
         if self.job['id']!=self.id or read(self.root/'active.json')['id']!=self.id:raise RuntimeError('invalid_plan')
     def guard_ownership(self):
-        cfg=read(self.home/'config.json');marker=read(self.home/'native-installation.json')
-        if cfg.get('auth_mode')!='local-password' or cfg.get('web_transport')!='local-http' or marker.get('id')!=cfg['id'] or marker.get('update_owner')!='installation':raise RuntimeError('native_owner_required')
+        cfg=read(self.home/'config.json')
+        if (self.home/'native-installation.json').exists():marker=read(self.home/'native-installation.json')
+        else:
+            pending=read(self.home/'native-adoption.json')
+            if pending.get('plan_id')!=self.id or not self.job.get('legacy_adoption'):raise RuntimeError('legacy_adoption_changed')
+            marker=pending['owner']
+        if marker.get('id')!=cfg['id'] or marker.get('update_owner')!='installation':raise RuntimeError('native_owner_required')
+        self.legacy=marker.get('legacy')
+        if self.legacy:
+            binary=Path(self.legacy.get('binary',''))
+            if sys.platform!='linux' or self.legacy.get('schema')!=1 or self.legacy.get('home')!=str(self.home) or binary.parent!=self.home/'bin' or not binary.is_absolute() or binary.is_symlink():raise RuntimeError('legacy_binding_invalid')
+            if cfg.get('auth_mode','pam')!='pam' or cfg.get('web_transport','https')!='https':raise RuntimeError('legacy_authentication_changed')
+            self.binary=binary
+        elif cfg.get('auth_mode')!='local-password' or cfg.get('web_transport')!='local-http':raise RuntimeError('native_owner_required')
         if (self.home/'saved-connections.json').exists() or (self.home/'updates/registered-service.json').exists():raise RuntimeError('externally_managed_update')
     def save(self,state=None,**values):
         if state:self.job['state']=state
         self.job.update(values,updated_at=int(time.time()*1000));write(self.file,self.job)
     def api(self,path,body=None):
         config=read(self.home/'config.json');origin=config['public_url'];port=config['port']
+        if self.legacy:
+            runtime=read(self.home/'runtime.json')
+            if runtime.get('id')!=config['id'] or not isinstance(runtime.get('port'),int) or not 0<runtime['port']<65536:raise RuntimeError('legacy_listener_identity_changed')
+            context=ssl.create_default_context(cafile=config.get('tls_ca') or config['tls_cert'])
+            connection=http.client.HTTPSConnection('127.0.0.1',runtime['port'],context=context,timeout=6)
+            try:
+                token=(self.home/'secrets/control-token').read_text(encoding='utf-8').strip()
+                connection.request('POST' if body is not None else 'GET','/api/v1/'+path,body=None if body is None else json.dumps(body),headers={'Authorization':'Bearer '+token,'Content-Type':'application/json'})
+                response=connection.getresponse();value=json.loads(response.read(2*1024*1024+1))
+                if response.status!=200:raise RuntimeError('legacy_operation_refused')
+                return value
+            finally:connection.close()
         if origin!='http://127.0.0.1:'+str(port):raise RuntimeError('invalid_local_origin')
         token=(self.home/'secrets/control-token').read_text(encoding='utf-8').strip();nonce=os.urandom(32).hex();connection=http.client.HTTPConnection('127.0.0.1',port,timeout=6)
         try:
@@ -272,16 +296,25 @@ class Worker:
             try:
                 result=self.api('status')
                 if digest(self.binary)==expected and result['id']==self.config['id'] and result.get('version')==expected_version:
-                    self.manager('observe',nonce=self.job['launch']['nonce'],pid=result['pid']);return
+                    if self.legacy and self.job['state']=='rolling_back' and not result.get('pid'):
+                        self.manager('observe-legacy',nonce=self.job['launch']['nonce'])
+                    else:self.manager('observe',nonce=self.job['launch']['nonce'],pid=result['pid'])
+                    return
             except Exception:pass
             time.sleep(.3)
         raise RuntimeError('candidate_health_failed')
     def protected(self):
-        paths=[self.home/'config.json',self.home/'native-installation.json']
-        paths+=list((self.home/'secrets').rglob('*'))
+        paths=[self.home/'config.json',self.home/'native-installation.json',self.home/'native-adoption.json']
+        paths+=list((self.home/'secrets').rglob('*'))+list((self.home/'tls').rglob('*'))
         return {str(p.relative_to(self.home)):digest(p) for p in paths if p.is_file() and p.name!='owner.lock'}
     def replace(self,binary,runtime):
         next_binary=self.binary.with_suffix('.native-next');shutil.copyfile(binary,next_binary);next_binary.chmod(0o755);sync_file(next_binary);durable_replace(next_binary,self.binary)
+        if runtime is None:
+            if (self.home/'runtime').exists():
+                retained=self.folder/'failed-candidate-runtime'
+                if retained.exists():raise RuntimeError('prior_runtime_recovery_unresolved')
+                durable_replace(self.home/'runtime',retained)
+            return
         runtime_next=self.home/'runtime.native-next'
         if runtime_next.exists():shutil.rmtree(runtime_next)
         shutil.copytree(runtime,runtime_next);sync_tree(runtime_next)
@@ -305,9 +338,21 @@ class Worker:
         backup=self.folder/'backup'
         if digest(backup/'binary')!=self.job['previous_sha256']:raise RuntimeError('rollback_digest_mismatch')
         with locked(self.home/'service.lock',False):
-            self.replace(backup/'binary',backup/'runtime')
+            self.replace(backup/'binary',backup/'runtime' if self.job.get('previous_runtime_present',True) else None)
         self.start();self.health(self.job['previous_sha256'])
         if (backup/'release.json').exists():write(self.home/'release.json',read(backup/'release.json'))
+        elif (self.home/'release.json').exists():
+            if read(self.home/'release.json').get('sha256')!=self.job['binary_sha256']:raise RuntimeError('release_baseline_changed')
+            (self.home/'release.json').unlink()
+        # A verified candidate is not an installed baseline until its entire
+        # transaction commits. Revoke only this first adoption's own marker.
+        marker=self.home/'native-installation.json'
+        if self.job.get('adopting_legacy') and marker.exists():
+            if read(marker).get('adoption',{}).get('plan_id')!=self.id:raise RuntimeError('adoption_baseline_changed')
+            marker.unlink()
+            fd=os.open(self.home,os.O_RDONLY)
+            try:os.fsync(fd)
+            finally:os.close(fd)
         self.save('rolled_back',reason=reason)
     def apply(self):
         self.guard_ownership()
@@ -332,19 +377,25 @@ class Worker:
         if digest(candidate)!=self.job['binary_sha256']:raise RuntimeError('candidate_changed')
         manifest=validate_runtime(resources)
         self.save('draining');self.gate()
-        if not self.api('desktop/update-readiness')['idle']:self.save('deferred',reason='work_or_delivery_not_settled');return
+        adoption=bool(self.job.get('legacy_adoption')) and not (self.home/'native-installation.json').exists()
+        self.save(adopting_legacy=adoption)
+        if not adoption and not self.api('desktop/update-readiness')['idle']:self.save('deferred',reason='work_or_delivery_not_settled');return
         with locked(self.home/'updates/admission.lock',False):
             self.guard_ownership()
-            if not self.api('desktop/update-readiness')['idle']:self.save('deferred',reason='work_or_delivery_not_settled');return
-            backup.mkdir(mode=0o700,exist_ok=True);shutil.copyfile(self.binary,backup/'binary');(backup/'binary').chmod(0o755);shutil.copytree(self.home/'runtime',backup/'runtime',dirs_exist_ok=True)
+            if not adoption and not self.api('desktop/update-readiness')['idle']:self.save('deferred',reason='work_or_delivery_not_settled');return
+            backup.mkdir(mode=0o700,exist_ok=True);shutil.copyfile(self.binary,backup/'binary');(backup/'binary').chmod(0o755)
+            previous_runtime=(self.home/'runtime').exists()
+            if previous_runtime:shutil.copytree(self.home/'runtime',backup/'runtime',dirs_exist_ok=True)
             if (self.home/'release.json').exists():shutil.copyfile(self.home/'release.json',backup/'release.json')
             sync_tree(backup)
-            self.save(previous_sha256=digest(backup/'binary'))
-            self.save('stopping');self.stop()
+            self.save(previous_sha256=digest(backup/'binary'),previous_runtime_present=previous_runtime)
+            if not adoption:
+                self.save('stopping');self.stop()
             # Keep this guard through every filesystem replacement. Reopening the
             # app cannot start an old process between stop and atomic swap.
             with locked(self.home/'service.lock',False):
                 self.guard_ownership()
+                if adoption:self.manager('adoption-stopped')
                 if digest(self.home/'config.json')!=self.job['config_sha256']:raise RuntimeError('configuration_changed')
                 with contextlib.closing(sqlite3.connect(self.home/'state.sqlite3')) as db,contextlib.closing(sqlite3.connect(backup/'state.sqlite3')) as out:db.backup(out)
                 protected=self.protected();write(backup/'protected.json',protected)
@@ -352,6 +403,11 @@ class Worker:
                 self.save('swapping');self.replace(candidate,staged_runtime);self.save('verifying')
             self.start();self.health(self.job['binary_sha256'])
             if self.protected()!=protected:raise RuntimeError('protected_state_changed')
+            if adoption:
+                pending=read(self.home/'native-adoption.json')
+                if pending['plan_id']!=self.id:raise RuntimeError('adoption_owner_changed')
+                owner=dict(pending['owner']);owner['adoption']={'plan_id':self.id,'binary_sha256':self.job['binary_sha256'],'version':self.job['version'],'runtime_manifest_sha256':digest(self.home/'runtime/native-bundle.json')}
+                write(self.home/'native-installation.json',owner)
             release=read(backup/'release.json') if (backup/'release.json').exists() else {};release.update(version=self.job['version'],sha256=self.job['binary_sha256'],release_url=self.job['release_url'],updated_at=int(time.time()*1000));write(self.home/'release.json',release)
             self.save('succeeded',completed_at=int(time.time()*1000))
     def execute(self):
