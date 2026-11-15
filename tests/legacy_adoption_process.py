@@ -161,9 +161,22 @@ def main():
                 job=worker.read(home/'native-updates'/identifier/'plan.json')
                 if job.get('request_id'):cleanup.append({'plan':identifier,'result':retire(identifier)})
             except Exception as error:cleanup.append({'plan':identifier,'error':repr(error)})
-        subprocess.run(['systemctl','--user','stop',name],capture_output=True)
-        subprocess.run(['systemctl','--user','disable',name],capture_output=True)
-        if definition.exists() and definition.read_text().startswith('[Unit]\nDescription=Disposable legacy Workshop adoption fixture\n'):definition.unlink()
-        subprocess.run(['systemctl','--user','daemon-reload'],capture_output=True)
+        for args in [('stop',name),('disable',name)]:
+            result=subprocess.run(['systemctl','--user',*args],capture_output=True,text=True)
+            if result.returncode:cleanup.append({'service':name,'operation':args[0],'error':result.stderr[-2000:]})
+        if definition.exists():
+            if definition.read_text()==unit:definition.unlink()
+            else:cleanup.append({'service':name,'error':'Disposable definition changed; preserved'})
+        result=subprocess.run(['systemctl','--user','daemon-reload'],capture_output=True,text=True)
+        if result.returncode:cleanup.append({'operation':'reload','error':result.stderr[-2000:]})
+        observation=subprocess.run(['systemctl','--user','show','--property=MainPID,ControlPID,ActiveState','--',name],capture_output=True,text=True)
+        fields=dict(line.split('=',1) for line in observation.stdout.splitlines() if '=' in line)
+        if fields.get('MainPID')!='0' or fields.get('ControlPID')!='0' or fields.get('ActiveState') not in ('inactive','failed'):
+            cleanup.append({'service':name,'error':'Disposable service shutdown not confirmed','observation':fields})
+        cleanup_failed=any('error' in item for item in cleanup)
+        body_passed=record['passed']
+        if cleanup_failed:
+            record.update(passed=False,cleanup_error='Exact disposable cleanup was not confirmed')
         record['cleanup']=cleanup;a.output.parent.mkdir(parents=True,exist_ok=True);a.output.write_text(json.dumps(record,indent=2)+'\n')
+        if cleanup_failed and body_passed:raise AssertionError(record['cleanup_error'])
 if __name__=='__main__':main()
