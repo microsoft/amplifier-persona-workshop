@@ -33,7 +33,7 @@ def main():
     download=root/'candidate';download.mkdir();binary=download/'persona-workshop'
     name='twin-workbench-adoption-fixture-'+str(uuid.uuid4())+'.service'
     definitions=Path(os.environ.get('XDG_CONFIG_HOME',str(Path.home()/'.config')))/'systemd/user'
-    definition=definitions/name;assert not definition.exists();plans=[];checks=[]
+    definition=definitions/name;assert not definition.exists();plans=[];retired_plans=set();checks=[]
     record={'fixture':str(root),'service':name,'package_sha256':digest(a.package),'legacy_sha256':digest(a.legacy_binary),'worker_source_sha256':digest(ROOT/'scripts/native_update.py'),'injected_candidate_start_failure':a.fail_start,'passed':False}
     try:
         with tarfile.open(a.package) as archive:archive.extractall(download,filter='data')
@@ -94,6 +94,12 @@ def main():
         def terminal(identifier):
             j=json.loads((home/'native-updates'/identifier/'plan.json').read_text())
             return j if j['state'] in ('succeeded','failed','rolled_back','recovery_required') else None
+        def retire(identifier):
+            def observe():
+                value=json.loads(run(binary,'--home',home,'native-update-manager',identifier,'retire-worker'))
+                if value.get('unresolved'):raise AssertionError('Fixture worker retirement remains unknown')
+                return value if not value.get('waiting_for_exit') else None
+            value=wait(observe,30);retired_plans.add(identifier);return value
         if a.fail_start:
             folder=home/'native-updates'/plan;j=worker.read(folder/'plan.json');j.update(state='queued',request_id=request,worker_request_id=request)
             worker.write(folder/'plan.json',j);shutil.copytree(folder/'candidate/runtime',folder/'worker-runtime');shutil.copyfile(ROOT/'scripts/native_update.py',folder/'worker.py')
@@ -115,6 +121,7 @@ def main():
             assert not (home/'runtime').exists()
             with sqlite3.connect(home/'state.sqlite3') as db:assert db.execute("SELECT data FROM audit WHERE kind='after-backup'").fetchone()==('{"newer":true}',)
             checks.append('failed candidate start restores original service/binary without baseline or runtime fabrication; later durable row survives')
+            record['prior_worker_retirement']=retire(plan)
             successor=str(uuid.uuid4());plans.append(successor);prepare[-1]=successor
             again=json.loads(run(*prepare));assert again['plan_id']==successor and again['previous_plan_id']==plan
             assert worker.read(folder/'legacy-origin.json')['plan_id']==plan
@@ -126,6 +133,7 @@ def main():
             marker=worker.read(home/'native-installation.json');assert marker['legacy']['service']['name']==name and marker['adoption']['plan_id']==plan
             repeat=json.loads(run(binary,'--home',home,'adopt-existing','apply','--plan',plan,'--request',request));assert repeat['state']=='succeeded'
             checks.append('actual packaged dispatcher adopts complete bundle and lost-reply retry does not relaunch')
+            record['prior_worker_retirement']=retire(plan)
             # Same existing authenticated update API/worker, on the preserved
             # HTTPS/PAM installation. Local exact bundle stands in for download.
             successor=str(uuid.uuid4());plans.append(successor);folder=home/'native-updates'/successor;folder.mkdir(mode=0o700)
@@ -147,16 +155,11 @@ def main():
     finally:
         cleanup=[]
         for identifier in plans:
+            if identifier in retired_plans:continue
             if not (home/'native-updates'/identifier/'plan.json').exists():continue
             try:
                 job=worker.read(home/'native-updates'/identifier/'plan.json')
-                if job.get('request_id'):
-                    def retired():
-                        value=json.loads(run(binary,'--home',home,'native-update-manager',identifier,'retire-worker'))
-                        if value.get('unresolved'):raise AssertionError('Fixture worker retirement remains unknown')
-                        return value if not value.get('waiting_for_exit') else None
-                    value=wait(retired,30)
-                    cleanup.append({'plan':identifier,'result':value})
+                if job.get('request_id'):cleanup.append({'plan':identifier,'result':retire(identifier)})
             except Exception as error:cleanup.append({'plan':identifier,'error':repr(error)})
         subprocess.run(['systemctl','--user','stop',name],capture_output=True)
         subprocess.run(['systemctl','--user','disable',name],capture_output=True)
