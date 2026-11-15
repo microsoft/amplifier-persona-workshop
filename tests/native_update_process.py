@@ -181,6 +181,21 @@ class ActualWorker:
     except (BlockingIOError,PermissionError):time.sleep(.1)
    raise AssertionError('Update worker still owns its operation')
 
+def fail_after_observed_candidate(real_health,input_arrived_after_backup):
+ """Inject a final verification failure only after the candidate is observed."""
+ attempted=False
+ def health(expected):
+  nonlocal attempted
+  first=not attempted;attempted=True
+  # Retain the original observation bound and exact native claim. An unknown
+  # Start or genuine health failure must propagate, not become the injected
+  # final-verification fault or defer that fault into rollback observation.
+  result=real_health(expected)
+  if first:
+   input_arrived_after_backup();raise RuntimeError('injected failed final verification after observed candidate')
+  return result
+ return health
+
 def run(package,result,managed=False,storage_helper=None):
  checks=[];observations=[];actual_worker=None;worker_deadline=None;registration=None;apply_failures=[];fixture_error=None;request_id=None
  if storage_helper is not None:
@@ -256,14 +271,8 @@ def run(package,result,managed=False,storage_helper=None):
     worker.write(folder/'plan.json',job);worker.write(home/'native-updates/active.json',{'id':identifier})
     if fail is not None:prepare_direct(identifier,job)
     current=worker.Worker(home,identifier)
-    real_health=current.health;health_calls=[]
     if fail=="health":
-     def fail_first(expected):
-      health_calls.append(expected)
-      if len(health_calls)==1:
-       input_arrived_after_backup();raise RuntimeError('injected failed health after actual swap')
-      return real_health(expected)
-     current.health=fail_first
+     current.health=fail_after_observed_candidate(current.health,input_arrived_after_backup)
     if fail=="start":
      real_start=current.start;start_calls=[]
      def fail_start():
@@ -308,7 +317,7 @@ def run(package,result,managed=False,storage_helper=None):
     else:
      current.execute();out=worker.read(folder/'plan.json')
     assert out['state']==('rolled_back' if fail else 'succeeded'),{'plan':out,'rollback_errors':rollback_errors}
-    checks.append('actual failed start restores prior binary/runtime' if fail=='start' else 'actual failed verification restores prior binary/runtime' if fail else 'actual API dispatch and packaged private worker perform idle stop, swap and verified restart')
+    checks.append('actual failed start restores prior binary/runtime' if fail=='start' else 'actual failed final verification after observed candidate restores prior binary/runtime' if fail else 'actual API dispatch and packaged private worker perform idle stop, swap and verified restart')
     assert (home/'config.json').read_bytes()==config_bytes
     assert worker.digest(home/'secrets/local-password.json')==secret_before and worker.digest(home/'secrets/control-token')==private_before
     assert current.api('status')['id']==identity_before

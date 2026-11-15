@@ -6,6 +6,46 @@ from unittest.mock import patch
 from http.server import BaseHTTPRequestHandler,HTTPServer
 ROOT=Path(__file__).resolve().parents[1]
 spec=importlib.util.spec_from_file_location('native_update',ROOT/'scripts/native_update.py');u=importlib.util.module_from_spec(spec);spec.loader.exec_module(u)
+fixture_spec=importlib.util.spec_from_file_location('native_update_process_fixture',ROOT/'tests/native_update_process.py');fixture=importlib.util.module_from_spec(fixture_spec);fixture_spec.loader.exec_module(fixture)
+
+class ObservedCandidateFailureTests(unittest.TestCase):
+ def test_final_failure_follows_exact_health_observation_and_preserves_rollback_health(self):
+  calls=[];observed=object()
+  def health(expected):calls.append(('health',expected));return observed
+  def input_arrival():calls.append(('input_arrival',))
+  injected=fixture.fail_after_observed_candidate(health,input_arrival)
+  with self.assertRaisesRegex(RuntimeError,'injected failed final verification after observed candidate'):
+   injected('candidate-sha')
+  self.assertEqual(calls,[('health','candidate-sha'),('input_arrival',)])
+  self.assertIs(injected('previous-sha'),observed)
+  self.assertEqual(calls,[('health','candidate-sha'),('input_arrival',),('health','previous-sha')])
+ def test_unobserved_or_interrupted_candidate_preserves_error_without_deferred_injection(self):
+  for error in [TimeoutError('candidate_health_failed'),RuntimeError('native claim unobserved'),KeyboardInterrupt()]:
+   with self.subTest(error=type(error).__name__):
+    calls=[];observed=object()
+    def health(expected):
+     calls.append(('health',expected))
+     if len(calls)==1:raise error
+     return observed
+    def input_arrival():calls.append(('input_arrival',))
+    injected=fixture.fail_after_observed_candidate(health,input_arrival)
+    try:injected('candidate-sha')
+    except BaseException as actual:self.assertIs(actual,error)
+    else:self.fail('Original observation error was suppressed')
+    self.assertEqual(calls,[('health','candidate-sha')])
+    self.assertIs(injected('previous-sha'),observed)
+    self.assertEqual(calls,[('health','candidate-sha'),('health','previous-sha')])
+ def test_input_arrival_error_is_not_replaced_or_injected_again(self):
+  calls=[];error=RuntimeError('fixture database write failed');observed=object()
+  def health(expected):calls.append(('health',expected));return observed
+  def input_arrival():calls.append(('input_arrival',));raise error
+  injected=fixture.fail_after_observed_candidate(health,input_arrival)
+  with self.assertRaises(RuntimeError) as caught:injected('candidate-sha')
+  self.assertIs(caught.exception,error)
+  self.assertEqual(calls,[('health','candidate-sha'),('input_arrival',)])
+  self.assertIs(injected('previous-sha'),observed)
+  self.assertEqual(calls,[('health','candidate-sha'),('input_arrival',),('health','previous-sha')])
+
 class NativeUpdateTests(unittest.TestCase):
  def legacy_owner(self):
   cfg=u.read(self.home/'config.json');cfg.update(auth_mode='pam',web_transport='https',public_url='https://workshop.example',port=443)
