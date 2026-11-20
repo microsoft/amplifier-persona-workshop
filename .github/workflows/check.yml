@@ -37,8 +37,8 @@ jobs:
     env:
       CARGO_BUILD_TARGET: ${{ matrix.target }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: '3.13'
       - name: Linux build prerequisites
@@ -59,7 +59,7 @@ jobs:
             target_env="${CARGO_BUILD_TARGET//-/_}"
             echo "CARGO_TARGET_${target_env^^}_RUSTFLAGS=-C target-feature=+crt-static" >> "$GITHUB_ENV"
           fi
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       - run: cargo +1.93.0 fmt --check
       - run: cargo +1.93.0 test --locked
       - run: cargo +1.93.0 clippy --locked --all-targets -- -D warnings
@@ -107,7 +107,7 @@ jobs:
           package=$(python -c 'import pathlib; print(next(p for p in pathlib.Path("dist").iterdir() if p.name.endswith(".tar.gz")))')
           python tests/legacy_adoption_process.py --package "$package" --legacy-binary "$legacy_binary" --output dist/legacy-adoption.json
           python tests/legacy_adoption_process.py --package "$package" --legacy-binary "$legacy_binary" --fail-start --output dist/legacy-adoption-rollback.json
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         if: matrix.target == 'x86_64-unknown-linux-gnu'
         with:
           node-version: 22
@@ -126,13 +126,13 @@ jobs:
           node tests/native-update-offer-browser.mjs
           package=$(python -c 'import pathlib; print(next(p for p in pathlib.Path("dist").iterdir() if p.name.endswith(".tar.gz")))')
           python tests/native_launch.py --package "$package" --browser --result dist/native-browser.json
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
           name: native-persona-fixture-${{ matrix.target }}
           path: fixture-dist/*
           if-no-files-found: ignore
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: failure()
         with:
           name: native-persona-failure-${{ matrix.target }}
@@ -140,7 +140,7 @@ jobs:
             dist/*.failure.json
             dist/legacy-adoption*.json
           if-no-files-found: ignore
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: native-persona-${{ matrix.target }}
           path: dist/*
